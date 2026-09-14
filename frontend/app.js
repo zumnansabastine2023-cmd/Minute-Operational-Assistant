@@ -1,6 +1,7 @@
 const startButton = document.getElementById("startMeeting");
 const stopButton = document.getElementById("stopMeeting");
 const transcript = document.getElementById("transcript");
+const meetingStatus = document.getElementById("meetingStatus");
 
 let meetingStream = null;
 
@@ -12,8 +13,9 @@ startButton.addEventListener("click", async function () {
         });
 
         transcript.textContent =
-            "Meeting audio captured. Meeting is now in progress...";
+    "Meeting audio captured. Meeting is now in progress...";
 
+meetingStatus.textContent = "Meeting in Progress";
         startButton.disabled = true;
         stopButton.disabled = false;
 
@@ -37,7 +39,9 @@ stopButton.addEventListener("click", function () {
     }
 
     transcript.textContent =
-        "Meeting stopped. Ready for the next meeting.";
+    "Meeting stopped. Ready for the next meeting.";
+
+meetingStatus.textContent = "Meeting Stopped";
 
     startButton.disabled = false;
     stopButton.disabled = true;

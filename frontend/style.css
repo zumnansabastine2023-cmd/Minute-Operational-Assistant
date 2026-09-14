@@ -1,0 +1,36 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 40px;
+    background: #f4f6f8;
+    color: #222;
+}
+
+h1 {
+    margin-bottom: 5px;
+}
+
+h2 {
+    margin-top: 0;
+}
+
+p {
+    color: #555;
+}
+
+button {
+    padding: 12px 24px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+#transcript {
+    margin-top: 15px;
+    padding: 20px;
+    min-height: 120px;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+}

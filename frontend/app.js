@@ -2,8 +2,17 @@ const startButton = document.getElementById("startMeeting");
 const stopButton = document.getElementById("stopMeeting");
 const transcript = document.getElementById("transcript");
 const meetingStatus = document.getElementById("meetingStatus");
+const meetingDate = document.getElementById("meetingDate");
+const meetingTime = document.getElementById("meetingTime");
+const generateMinutesButton = document.getElementById("generateMinutes");
+const minutes = document.getElementById("minutes");
 
 let meetingStream = null;
+
+const now = new Date();
+
+meetingDate.textContent = now.toLocaleDateString();
+meetingTime.textContent = now.toLocaleTimeString();
 
 startButton.addEventListener("click", async function () {
     try {
@@ -42,9 +51,12 @@ stopButton.addEventListener("click", function () {
     "Meeting stopped. Ready for the next meeting.";
 
 meetingStatus.textContent = "Meeting Stopped";
-
+generateMinutesButton.disabled = false;
     startButton.disabled = false;
     stopButton.disabled = true;
 
     console.log("Meeting stopped.");
+});
+generateMinutesButton.addEventListener("click", function () {
+    minutes.textContent = "Generating structured minutes...";
 });

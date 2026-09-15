@@ -17,13 +17,30 @@
         and find information from previous meetings.
     </p>
 
-    <button id="startMeeting">Start Meeting</button>
+    <h3>Meeting Information</h3>
+
+<label for="meetingTitle">Meeting Title:</label>
+<input type="text" id="meetingTitle" placeholder="Enter meeting title">
+
+<br><br>
+
+<p>Date: <span id="meetingDate"></span></p>
+<p>Time: <span id="meetingTime"></span></p>
+
+<button id="startMeeting">Start Meeting</button>
 <button id="stopMeeting" disabled>Stop Meeting</button>
 
 <p>
     Meeting Status:
     <span id="meetingStatus">Not Started</span>
 </p>
+<button id="generateMinutes" disabled>Generate Minutes</button>
+
+<h3>Structured Minutes</h3>
+
+<div id="minutes">
+    Your structured meeting minutes will appear here...
+</div>
 
 <h3>Live Transcript</h3>
 

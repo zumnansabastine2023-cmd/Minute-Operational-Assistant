@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analytix - Meeting Assistant</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <h1>Analytix</h1>
+    <h2>Minutes Operational Assistant</h2>
+
+    <p>
+        Capture meetings, generate structured minutes,
+        and find information from previous meetings.
+    </p>
+
+    <h3>Meeting Information</h3>
+
+<label for="meetingTitle">Meeting Title:</label>
+<input type="text" id="meetingTitle" placeholder="Enter meeting title">
+
+<br><br>
+
+<p>Date: <span id="meetingDate"></span></p>
+<p>Time: <span id="meetingTime"></span></p>
+
+<button id="startMeeting">Start Meeting</button>
+<button id="stopMeeting" disabled>Stop Meeting</button>
+
+<p>
+    Meeting Status:
+    <span id="meetingStatus">Not Started</span>
+</p>
+<button id="generateMinutes" disabled>Generate Minutes</button>
+
+<h3>Structured Minutes</h3>
+
+<div id="minutes">
+
+    <p><strong>Meeting Title:</strong> <span id="minuteTitle">Not generated yet</span></p>
+
+    <p><strong>Agenda:</strong></p>
+    <div id="agenda">Not generated yet</div>
+
+    <p><strong>Key Discussion Points:</strong></p>
+    <div id="discussionPoints">Not generated yet</div>
+
+    <p><strong>Decisions:</strong></p>
+    <div id="decisions">Not generated yet</div>
+
+    <p><strong>Tasks / Action Items:</strong></p>
+    <div id="actionItems">Not generated yet</div>
+
+    <p><strong>Responsible Officers:</strong></p>
+    <div id="responsibleOfficers">Not generated yet</div>
+
+    <p><strong>Deadlines:</strong></p>
+    <div id="deadlines">Not generated yet</div>
+
+</div>
+
+<h3>Live Transcript</h3>
+
+    <div id="transcript">
+        Your live transcript will appear here...
+    </div>
+    <script src="app.js"></script>
+
+</body>
+</html>

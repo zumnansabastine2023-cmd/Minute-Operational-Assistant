@@ -35,6 +35,45 @@ function Icon({ name, size = 18 }) {
   return <svg {...commonProps}>{paths[name] || paths.home}</svg>
 }
 
+function MoaMark({ size = 42 }) {
+  return (
+    <svg className="moa-mark" width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="moa-ribbon-a" x1="7" y1="8" x2="26" y2="39" gradientUnits="userSpaceOnUse"><stop stopColor="#A7F3D0" /><stop offset=".52" stopColor="#10B981" /><stop offset="1" stopColor="#087553" /></linearGradient>
+        <linearGradient id="moa-ribbon-b" x1="41" y1="8" x2="22" y2="39" gradientUnits="userSpaceOnUse"><stop stopColor="#D4FAE6" /><stop offset=".42" stopColor="#45D99A" /><stop offset="1" stopColor="#0B7A57" /></linearGradient>
+        <filter id="moa-ribbon-shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="2" stdDeviation="1.8" floodColor="#063E2C" floodOpacity=".2" /></filter>
+      </defs>
+      <g filter="url(#moa-ribbon-shadow)">
+        <path d="M7.5 36V13.2c0-2.8 3.4-4.1 5.3-2.1L25 23.8l-5 6.1-5.4-5.7V36c0 2-1.6 3.5-3.5 3.5S7.5 38 7.5 36Z" fill="url(#moa-ribbon-a)" />
+        <path d="M40.5 36V13.2c0-2.8-3.4-4.1-5.3-2.1L20 26.9l5 6.1 8.4-8.8V36c0 2 1.6 3.5 3.5 3.5s3.6-1.5 3.6-3.5Z" fill="url(#moa-ribbon-b)" />
+        <path d="m20 26.9 5 6.1 4.7-4.9-4.8-6.2-4.9 5Z" fill="#0A8C61" fillOpacity=".72" />
+        <path d="M10.9 10.2c.7 0 1.4.3 1.9.9L25 23.8l-2.5 3.1-12-12.4c-1.7-1.8-1.2-3.8.4-4.3Z" fill="#E4FFF0" fillOpacity=".38" />
+      </g>
+    </svg>
+  )
+}
+
+function AssistantMascot({ size = 48 }) {
+  return (
+    <svg className="assistant-mascot" width={size} height={size} viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="moa-bot-shell" x1="15" y1="12" x2="49" y2="55" gradientUnits="userSpaceOnUse"><stop stopColor="#FFFFFF" /><stop offset=".58" stopColor="#E4F3EA" /><stop offset="1" stopColor="#A9D6BE" /></linearGradient>
+        <linearGradient id="moa-bot-face" x1="17" y1="20" x2="47" y2="44" gradientUnits="userSpaceOnUse"><stop stopColor="#19382D" /><stop offset="1" stopColor="#07140F" /></linearGradient>
+        <filter id="moa-eye-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="1.7" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+      </defs>
+      <path d="M32 11V7" stroke="#75D9A4" strokeWidth="2.5" strokeLinecap="round" /><circle cx="32" cy="5" r="2.3" fill="#A7F3D0" />
+      <path d="M12 31H8c-2 0-3.5 1.6-3.5 3.5v5C4.5 42 6 43.5 8 43.5h4M52 31h4c2 0 3.5 1.6 3.5 3.5v5c0 2-1.5 3.5-3.5 3.5h-4" fill="#17A871" stroke="#76DDA8" strokeWidth="1.5" />
+      <path d="M16 64c1.2-8.4 7.1-13 16-13s14.8 4.6 16 13H16Z" fill="url(#moa-bot-shell)" stroke="#A9D6BE" strokeWidth="1.2" />
+      <path d="M25 53c1.7 3.3 12.3 3.3 14 0v8H25v-8Z" fill="#7EBE9D" />
+      <path d="M11 29c0-10.5 8.5-18 21-18s21 7.5 21 18v12c0 9-7.3 16-16.3 16h-9.4C18.3 57 11 50 11 41V29Z" fill="url(#moa-bot-shell)" stroke="#B8E7CD" strokeWidth="1.3" />
+      <rect x="15.5" y="19" width="33" height="27" rx="11" fill="url(#moa-bot-face)" stroke="#2D5D4B" />
+      <path d="M18.5 25c4-5 10-5 14-5h8" stroke="#8ACDAA" strokeOpacity=".18" strokeWidth="2" strokeLinecap="round" />
+      <rect x="21" y="27" width="5.5" height="10" rx="2.75" fill="#82F3B7" filter="url(#moa-eye-glow)" /><rect x="37.5" y="27" width="5.5" height="10" rx="2.75" fill="#82F3B7" filter="url(#moa-eye-glow)" />
+      <path d="M23 53.5v4M41 53.5v4" stroke="#91C9A9" strokeWidth="4" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 async function authenticatedFetch(url, options = {}) {
   const {
     data: { session },
@@ -967,14 +1006,14 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   return (
     <div className={`app-shell ${theme}`}>
       <aside className="sidebar">
-        <div className="brand"><strong>MOA</strong><span>Minutes Operational<br />Assistant</span></div>
+        <div className="brand"><MoaMark /><span><strong>MOA</strong><small>Minutes Operational Assistant</small></span></div>
         <nav aria-label="Primary navigation">
           <p className="nav-label">Main</p>
           <button className={`nav-item ${mode === 'dashboard' ? 'active' : ''}`} onClick={() => handleModeChange('dashboard')}><Icon name="home" />Dashboard</button>
           <button className={`nav-item ${mode === 'meetings' ? 'active' : ''}`} onClick={() => handleModeChange('meetings')}><Icon name="clock" />Meetings</button>
           <button className={`nav-item ${mode === 'minutes' ? 'active' : ''}`} onClick={() => handleModeChange('minutes')}><Icon name="upload" />Minutes</button>
           <p className="nav-label">Intelligence</p>
-          <button className={`nav-item ${mode === 'assistant' ? 'active' : ''}`} onClick={() => handleModeChange('assistant')}><Icon name="sparkles" />AI Assistant</button>
+          <button className={`nav-item ${mode === 'assistant' ? 'active' : ''}`} onClick={() => handleModeChange('assistant')}><span className="nav-assistant-icon"><AssistantMascot size={22} /></span>AI Assistant</button>
         </nav>
         <div className="sidebar-bottom">
           <button className={`nav-item ${mode === 'settings' ? 'active' : ''}`} onClick={() => handleModeChange('settings')}><Icon name="settings" />Settings</button>
@@ -991,7 +1030,31 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       {authError && <p className="error">{authError}</p>}
 
       {mode === 'dashboard' ? (
-        <section className="dashboard"><div className="dashboard-hero"><p className="eyebrow">YOUR WORKSPACE</p><h2>Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 18 ? 'afternoon' : 'evening'}, {userFirstName}.</h2><p>Your meetings, decisions and conversations — organized in one place.</p></div><section className="dashboard-capture"><div><p className="section-label">START A MEETING</p><h2>Capture the conversation while it matters.</h2></div><div className="quick-actions"><button onClick={() => handleModeChange('live')}><Icon name="mic" /><strong>Start Live Meeting</strong><span>Transcribe as the conversation happens.</span><Icon name="chevron" /></button><button onClick={() => handleModeChange('recorded')}><Icon name="upload" /><strong>Upload Recording</strong><span>Turn an existing recording into structured notes.</span><Icon name="chevron" /></button></div></section><div className="dashboard-grid"><div className="recent-meetings"><div><div><p className="section-label">RECENT ACTIVITY</p><h2>Recent meetings</h2></div><button onClick={() => handleModeChange('history')}>View all</button></div>{meetings.slice(0, 3).map((meeting) => <button key={meeting.id} onClick={() => selectMeeting(meeting.id)}><span><strong>{meeting.title}</strong><small>{new Date(meeting.created_at).toLocaleString()}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><Icon name="chevron" /></button>)}</div><div className="assistant-cta"><p>ASK MOA</p><h2>Ask questions across your meeting knowledge.</h2><span>Search decisions, conversations, and the details that matter.</span><button onClick={() => handleModeChange('assistant')}>Open Assistant <Icon name="chevron" /></button></div></div></section>
+        <section className="dashboard">
+          <div className="dashboard-atmosphere" aria-hidden="true"><i /><i /><i /></div>
+          <div className="dashboard-hero">
+            <p className="eyebrow">MINUTES OPERATIONAL ASSISTANT</p>
+            <h2>Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 18 ? 'afternoon' : 'evening'}, {userFirstName}.</h2>
+            <p>Your meetings, decisions and conversations — organized in one place.</p>
+          </div>
+          <section className="dashboard-capture">
+            <div className="capture-intro"><p className="section-label">START A MEETING</p><h2>Capture the conversation while it matters.</h2></div>
+            <div className="quick-actions">
+              <button onClick={() => handleModeChange('live')}><Icon name="mic" /><strong>Start Live Meeting</strong><span>Transcribe as the conversation happens.</span><Icon name="chevron" /></button>
+              <button onClick={() => handleModeChange('recorded')}><Icon name="upload" /><strong>Upload Recording</strong><span>Turn an existing recording into structured notes.</span><Icon name="chevron" /></button>
+            </div>
+          </section>
+          <div className="dashboard-grid">
+            <div className="recent-meetings">
+              <div><div><p className="section-label">RECENT ACTIVITY</p><h2>Recent meetings</h2></div><button onClick={() => handleModeChange('history')}>View all <Icon name="chevron" size={14} /></button></div>
+              {meetings.slice(0, 3).map((meeting) => <button key={meeting.id} onClick={() => selectMeeting(meeting.id)}><span className="meeting-file-icon"><Icon name="clock" size={15} /></span><span><strong>{meeting.title}</strong><small>{new Date(meeting.created_at).toLocaleString()}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><Icon name="chevron" /></button>)}
+            </div>
+            <div className="assistant-cta">
+              <div className="assistant-card-copy"><p>ASK MOA</p><h2>Ask questions across your meeting knowledge.</h2><span>Search decisions, conversations, and the details that matter.</span><button onClick={() => handleModeChange('assistant')}>Open Assistant <Icon name="chevron" /></button></div>
+              <div className="assistant-card-art" aria-hidden="true"><span>Your AI meeting partner</span><AssistantMascot size={170} /></div>
+            </div>
+          </div>
+        </section>
       ) : mode === 'meetings' ? (
         selectedMeeting ? renderMeetingWorkspace() : <section className="meetings-hub"><header className="page-header"><div><h2>Meetings</h2><p>Capture, review and manage your conversations.</p></div><button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button></header><form className="meeting-search" onSubmit={searchMeetings}><input value={meetingSearchQuery} onChange={(event) => { setMeetingSearchQuery(event.target.value); if (!event.target.value.trim()) setMeetingSearchResults(null) }} placeholder="Search your meetings" aria-label="Search meetings" /><button type="submit" disabled={isSearchingMeetings}>{isSearchingMeetings ? 'Searching...' : 'Search'}</button></form><div className="meeting-filters" role="group" aria-label="Meeting type filters">{[['all', 'All'], ['live', 'Live'], ['recorded', 'Recorded'], ['online', 'Online']].map(([filter, label]) => <button key={filter} className={meetingFilter === filter ? 'active' : ''} onClick={() => setMeetingFilter(filter)}>{label}</button>)}</div><div className="meeting-list">{isLoadingMeetings ? <p>Loading meetings...</p> : displayedMeetings.length === 0 ? <p>{meetingFilter === 'online' ? 'Online Meeting records will appear here once the feature is available.' : 'No meetings match this view.'}</p> : displayedMeetings.map((meeting) => <button className="meeting-row" key={meeting.id} onClick={() => selectMeeting(meeting.id)}><span><strong>{meeting.title}</strong><small>{new Date(meeting.created_at).toLocaleString()}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><Icon name="chevron" /></button>)}</div>{historyError && <p className="error">{historyError}</p>}</section>
       ) : mode === 'minutes' ? (
@@ -1069,7 +1132,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         </div>
       ) : (
         <div className="transcript-section assistant-workspace">
-          <h2>AI Assistant</h2>
+          <header className="assistant-header"><AssistantMascot size={58} /><div><p className="eyebrow">YOUR MEETING COPILOT</p><h2>Ask MOA</h2><span>Find decisions, action items, and context across your saved meetings.</span></div></header>
           <div aria-live="polite">
             {assistantMessages.map((chatMessage) => (
               <div key={chatMessage.id} className={`assistant-message ${chatMessage.role}${chatMessage.isGreeting ? ' greeting' : ''}`}>

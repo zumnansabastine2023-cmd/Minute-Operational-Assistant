@@ -6,5 +6,5 @@ html, body, #root {
 }
 
 html { background: #f4f1ea; }
-body { min-height: 100vh; }
+body { min-height: 100vh; background: #f4f1ea; color: #14251e; }
 #root { min-height: 100vh; }

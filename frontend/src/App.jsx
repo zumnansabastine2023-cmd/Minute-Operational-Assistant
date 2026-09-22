@@ -1070,7 +1070,30 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
           {historyError && <p className="error">{historyError}</p>}
         </section>
       ) : mode === 'minutes' ? (
-        <section className="minutes-hub"><header className="page-header"><div><h2>Minutes</h2><p>Review the decisions and next steps from your saved meetings.</p></div><button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button></header><div className="meeting-list">{isLoadingMeetings ? <p>Loading minutes...</p> : meetingsWithMinutes.length === 0 ? <p>No generated minutes are available yet.</p> : meetingsWithMinutes.map((meeting) => <button className="meeting-row minutes-row" key={meeting.id} onClick={() => selectMeeting(meeting.id, 'minutes')}><span><strong>{meeting.title}</strong><small>{meeting.minutes?.summary || 'Generated meeting minutes'}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><small>{new Date(meeting.created_at).toLocaleDateString()}</small><Icon name="chevron" /></button>)}</div></section>
+        <section className="minutes-hub">
+          <header className="page-header minutes-hero">
+            <div><p className="eyebrow">MEETING KNOWLEDGE</p><h2>Minutes</h2><p>Review the decisions and next steps from your saved meetings.</p></div>
+            <button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button>
+          </header>
+          <section className="minutes-library" aria-labelledby="minutes-library-title">
+            <header className="minutes-library-header">
+              <div><p className="eyebrow">GENERATED MINUTES</p><h3 id="minutes-library-title">Minutes library</h3></div>
+              {!isLoadingMeetings && <span className="minutes-count">{meetingsWithMinutes.length} {meetingsWithMinutes.length === 1 ? 'summary' : 'summaries'}</span>}
+            </header>
+            <div className="minutes-library-list">
+              {isLoadingMeetings ? <div className="minutes-state" role="status"><span className="minutes-state-icon"><Icon name="clock" size={22} /></span><strong>Loading minutes...</strong></div> : meetingsWithMinutes.length === 0 ? (
+                <div className="minutes-state"><span className="minutes-state-icon"><Icon name="sparkles" size={24} /></span><strong>Your meeting knowledge starts here</strong><p>Generated meeting minutes will appear here after you process a meeting and save it with its minutes.</p></div>
+              ) : meetingsWithMinutes.map((meeting) => (
+                <button className="minutes-entry" key={meeting.id} onClick={() => selectMeeting(meeting.id, 'minutes')}>
+                  <span className={`minutes-type-icon ${meeting.type}`}><Icon name={meeting.type === 'live' ? 'mic' : meeting.type === 'online' ? 'video' : 'upload'} size={20} /></span>
+                  <span className="minutes-entry-copy"><strong>{meeting.title}</strong><small>{meeting.minutes?.summary || 'Generated meeting minutes'}</small></span>
+                  <span className="minutes-entry-meta"><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><small>{new Date(meeting.created_at).toLocaleDateString()}</small></span>
+                  <Icon name="chevron" />
+                </button>
+              ))}
+            </div>
+          </section>
+        </section>
       ) : mode === 'online' ? (
         <section className="online-meeting-view"><header><p className="eyebrow">ONLINE MEETING</p><h2>Capture shared meeting audio</h2><p>Share the browser tab containing your meeting and make sure tab audio is enabled.</p></header><div className={`online-capture-state ${onlineStatus.toLowerCase()}`}><span></span><p>{onlineStatus === 'Capturing' ? 'Capturing shared meeting audio' : onlineStatus}</p></div><button className="primary-button online-capture-button" onClick={handleOnlineRecordingToggle} disabled={onlineStatus === 'Connecting' || onlineStatus === 'Stopping'}>{isOnlineCapturing || onlineStatus === 'Stopping' ? 'Stop Online Meeting' : 'Start Online Meeting'}</button><p className="online-capture-hint">For best results, use Chrome or Edge and share the meeting tab with audio.</p>{(onlineTranscript || onlineInterimTranscript) && <div className="transcript-section"><h2>Transcript</h2>{onlineTranscript && <p>{onlineTranscript}</p>}{onlineInterimTranscript && <p className="transcribing">{onlineInterimTranscript}</p>}</div>}{onlineStatus === 'Finished' && onlineTranscript.trim() && <div className="meeting-complete-actions"><button onClick={() => generateMinutes('online', onlineTranscript)} disabled={isGeneratingMinutes}>Generate Minutes</button><button onClick={() => saveMeeting('online', onlineTranscript, onlineMinutes)} disabled={isGeneratingMinutes || isSavingMeeting}>Save Meeting</button></div>}{isGeneratingMinutes && <p className="transcribing">Generating Minutes...</p>}{renderMinutes(onlineMinutes)}</section>
       ) : mode === 'settings' ? (

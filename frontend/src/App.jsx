@@ -31,6 +31,7 @@ function Icon({ name, size = 18 }) {
     moon: <path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z" />,
     chevron: <path d="m9 18 6-6-6-6" />,
     logout: <><path d="M10 17l5-5-5-5M15 12H3" /><path d="M13 4h5a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5" /></>,
+    search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></>,
   }
   return <svg {...commonProps}>{paths[name] || paths.home}</svg>
 }
@@ -1056,7 +1057,18 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
           </div>
         </section>
       ) : mode === 'meetings' ? (
-        selectedMeeting ? renderMeetingWorkspace() : <section className="meetings-hub"><header className="page-header"><div><h2>Meetings</h2><p>Capture, review and manage your conversations.</p></div><button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button></header><form className="meeting-search" onSubmit={searchMeetings}><input value={meetingSearchQuery} onChange={(event) => { setMeetingSearchQuery(event.target.value); if (!event.target.value.trim()) setMeetingSearchResults(null) }} placeholder="Search your meetings" aria-label="Search meetings" /><button type="submit" disabled={isSearchingMeetings}>{isSearchingMeetings ? 'Searching...' : 'Search'}</button></form><div className="meeting-filters" role="group" aria-label="Meeting type filters">{[['all', 'All'], ['live', 'Live'], ['recorded', 'Recorded'], ['online', 'Online']].map(([filter, label]) => <button key={filter} className={meetingFilter === filter ? 'active' : ''} onClick={() => setMeetingFilter(filter)}>{label}</button>)}</div><div className="meeting-list">{isLoadingMeetings ? <p>Loading meetings...</p> : displayedMeetings.length === 0 ? <p>{meetingFilter === 'online' ? 'Online Meeting records will appear here once the feature is available.' : 'No meetings match this view.'}</p> : displayedMeetings.map((meeting) => <button className="meeting-row" key={meeting.id} onClick={() => selectMeeting(meeting.id)}><span><strong>{meeting.title}</strong><small>{new Date(meeting.created_at).toLocaleString()}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><Icon name="chevron" /></button>)}</div>{historyError && <p className="error">{historyError}</p>}</section>
+        selectedMeeting ? renderMeetingWorkspace() : <section className="meetings-hub">
+          <header className="page-header meetings-hero"><div><p className="eyebrow">CONVERSATION LIBRARY</p><h2>Meetings</h2><p>Capture, review and manage your conversations.</p></div><button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button></header>
+          <div className="meetings-tools">
+            <form className="meeting-search" onSubmit={searchMeetings}><Icon name="search" size={19} /><input value={meetingSearchQuery} onChange={(event) => { setMeetingSearchQuery(event.target.value); if (!event.target.value.trim()) setMeetingSearchResults(null) }} placeholder="Search your meetings..." aria-label="Search meetings" /><button type="submit" disabled={isSearchingMeetings}>{isSearchingMeetings ? 'Searching...' : 'Search'}</button></form>
+            <div className="meeting-filters" role="group" aria-label="Meeting type filters">{[['all', 'All'], ['live', 'Live'], ['recorded', 'Recorded'], ['online', 'Online']].map(([filter, label]) => <button type="button" key={filter} className={meetingFilter === filter ? 'active' : ''} onClick={() => setMeetingFilter(filter)}>{label}</button>)}</div>
+          </div>
+          <section className="meeting-library">
+            <header className="meeting-library-header"><div><p className="section-label">YOUR MEETINGS</p><h3>Meeting library</h3></div><span>{displayedMeetings.length} {displayedMeetings.length === 1 ? 'meeting' : 'meetings'}</span></header>
+            <div className="meeting-list">{isLoadingMeetings ? <div className="meetings-empty"><span className="meeting-empty-icon"><Icon name="clock" size={21} /></span><strong>Loading meetings...</strong></div> : displayedMeetings.length === 0 ? <div className="meetings-empty"><span className="meeting-empty-icon"><Icon name="search" size={21} /></span><strong>No meetings found</strong><p>{meetingFilter === 'online' ? 'Online meetings will appear here after you save one.' : 'Try another search or start a new conversation.'}</p></div> : displayedMeetings.map((meeting) => <button className={`meeting-row meeting-row-${meeting.type}`} key={meeting.id} onClick={() => selectMeeting(meeting.id)}><span className="meeting-type-icon"><Icon name={meeting.type === 'live' ? 'mic' : meeting.type === 'online' ? 'video' : 'upload'} size={18} /></span><span className="meeting-row-copy"><strong>{meeting.title}</strong><small>{new Date(meeting.created_at).toLocaleString()}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><Icon name="chevron" /></button>)}</div>
+          </section>
+          {historyError && <p className="error">{historyError}</p>}
+        </section>
       ) : mode === 'minutes' ? (
         <section className="minutes-hub"><header className="page-header"><div><h2>Minutes</h2><p>Review the decisions and next steps from your saved meetings.</p></div><button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button></header><div className="meeting-list">{isLoadingMeetings ? <p>Loading minutes...</p> : meetingsWithMinutes.length === 0 ? <p>No generated minutes are available yet.</p> : meetingsWithMinutes.map((meeting) => <button className="meeting-row minutes-row" key={meeting.id} onClick={() => selectMeeting(meeting.id, 'minutes')}><span><strong>{meeting.title}</strong><small>{meeting.minutes?.summary || 'Generated meeting minutes'}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><small>{new Date(meeting.created_at).toLocaleDateString()}</small><Icon name="chevron" /></button>)}</div></section>
       ) : mode === 'online' ? (
@@ -1133,32 +1145,44 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       ) : (
         <div className="transcript-section assistant-workspace">
           <header className="assistant-header"><AssistantMascot size={58} /><div><p className="eyebrow">YOUR MEETING COPILOT</p><h2>Ask MOA</h2><span>Find decisions, action items, and context across your saved meetings.</span></div></header>
-          <div aria-live="polite">
+          <section className="assistant-chat-panel">
+          <div className="assistant-conversation" aria-live="polite">
             {assistantMessages.map((chatMessage) => (
-              <div key={chatMessage.id} className={`assistant-message ${chatMessage.role}${chatMessage.isGreeting ? ' greeting' : ''}`}>
-                <p>
-                  <strong>{chatMessage.role === 'user' ? 'You' : 'Assistant'}:</strong>{' '}
-                  {chatMessage.content}
-                </p>
-                {chatMessage.role === 'assistant' && renderAssistantSources(chatMessage.sources)}
-              </div>
+              chatMessage.isGreeting ? (
+                <div key={chatMessage.id} className="assistant-welcome">
+                  <span className="assistant-welcome-avatar"><AssistantMascot size={68} /></span>
+                  <h3>Ask MOA about your meetings</h3>
+                  <p>Find decisions, action items, deadlines and context across your saved conversations.</p>
+                  <div className="assistant-suggestions" aria-label="Example questions">
+                    {['What decisions were made?', 'Who owns the action items?', 'What deadlines were mentioned?'].map((suggestion) => <button key={suggestion} onClick={() => setAssistantInput(suggestion)}>{suggestion}<Icon name="chevron" size={14} /></button>)}
+                  </div>
+                </div>
+              ) : (
+                <div key={chatMessage.id} className={`assistant-message ${chatMessage.role}${chatMessage.isError ? ' assistant-error' : ''}`}>
+                  {chatMessage.role === 'assistant' && <span className="assistant-message-avatar"><AssistantMascot size={32} /></span>}
+                  <div className="assistant-message-content">
+                    <strong className="assistant-message-author">{chatMessage.role === 'user' ? 'You' : 'MOA'}</strong>
+                    <p>{chatMessage.content}</p>
+                    {chatMessage.role === 'assistant' && renderAssistantSources(chatMessage.sources)}
+                  </div>
+                </div>
+              )
             ))}
-            {isAssistantThinking && <p className="transcribing">Thinking...</p>}
+            {isAssistantThinking && <div className="assistant-thinking"><span className="assistant-message-avatar"><AssistantMascot size={30} /></span><p>MOA is thinking<span aria-hidden="true">...</span></p><i /><i /><i /></div>}
           </div>
-          <textarea
-            value={assistantInput}
-            onChange={(event) => setAssistantInput(event.target.value)}
-            onKeyDown={handleAssistantKeyDown}
-            placeholder="Ask about your indexed meetings..."
-            rows="3"
-            disabled={isAssistantThinking}
-          />
-          <button
-            onClick={sendAssistantMessage}
-            disabled={isAssistantThinking || !assistantInput.trim()}
-          >
-            Send
-          </button>
+          <div className="assistant-composer">
+            <textarea
+              value={assistantInput}
+              onChange={(event) => setAssistantInput(event.target.value)}
+              onKeyDown={handleAssistantKeyDown}
+              placeholder="Ask about your indexed meetings..."
+              rows="2"
+              disabled={isAssistantThinking}
+            />
+            <button onClick={sendAssistantMessage} disabled={isAssistantThinking || !assistantInput.trim()}>Send <Icon name="chevron" size={16} /></button>
+          </div>
+          <p className="assistant-composer-hint">Press Enter to send · Shift + Enter for a new line</p>
+          </section>
         </div>
       )}
 

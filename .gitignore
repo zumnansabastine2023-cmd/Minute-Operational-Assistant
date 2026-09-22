@@ -1,0 +1,10 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Generated dependencies and Python artifacts
+node_modules/
+dist/
+__pycache__/
+*.py[cod]

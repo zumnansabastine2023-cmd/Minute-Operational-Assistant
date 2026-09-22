@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# Generated or uploaded audio recordings
+*.ogg
+*.wav
+*.webm
+*.mp3
+*.m4a

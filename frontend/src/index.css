@@ -1,0 +1,10 @@
+html, body, #root {
+  width: 100%;
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+html { background: #f4f1ea; }
+body { min-height: 100vh; }
+#root { min-height: 100vh; }

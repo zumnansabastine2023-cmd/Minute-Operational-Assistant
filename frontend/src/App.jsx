@@ -549,8 +549,39 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     onSignOut()
   }
 
+  const validateUploadFile = (file) => {
+    const MAX_SIZE_MB = 100
+    const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
+    const SUPPORTED_EXTENSIONS = [
+      '.mp3', '.wav', '.m4a', '.ogg', '.webm', '.flac', '.aac',
+      '.mp4', '.mov', '.mkv'
+    ]
+
+    if (file.size > MAX_SIZE_BYTES) {
+      return { valid: false, error: `File exceeds 100 MB limit (${(file.size / 1024 / 1024).toFixed(1)} MB).` }
+    }
+
+    const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase()
+    if (!ext || !SUPPORTED_EXTENSIONS.includes(ext)) {
+      return {
+        valid: false,
+        error: `Unsupported file format. Supported: ${SUPPORTED_EXTENSIONS.join(', ')}`
+      }
+    }
+
+    return { valid: true }
+  }
+
   const handleFileSelection = (event) => {
     const [file] = event.target.files
+    if (file) {
+      const validation = validateUploadFile(file)
+      if (!validation.valid) {
+        setError(validation.error)
+        setSelectedFile(null)
+        return
+      }
+    }
     setSelectedFile(file || null)
     setRecordedTranscript('')
     setRecordedMinutes(null)
@@ -559,6 +590,12 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
 
   const transcribeRecording = async () => {
     if (!selectedFile || isTranscribingRecording) return
+
+    const validation = validateUploadFile(selectedFile)
+    if (!validation.valid) {
+      setError(validation.error)
+      return
+    }
 
     setIsTranscribingRecording(true)
     setRecordedMinutes(null)
@@ -572,8 +609,17 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         method: 'POST',
         body: formData,
       })
+
       if (!response.ok) {
-        throw new Error(`Backend error: ${response.status}`)
+        if (response.status === 413) {
+          throw new Error('File exceeds 100 MB limit.')
+        } else if (response.status === 415) {
+          throw new Error('Unsupported file format. Please upload an audio or video file.')
+        } else if (response.status === 400) {
+          throw new Error('Uploaded file is empty.')
+        } else {
+          throw new Error(`Backend error: ${response.status}`)
+        }
       }
 
       const data = await response.json()
@@ -991,7 +1037,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         </>
       ) : mode === 'recorded' ? (
         <div className="transcript-section">
-          <input type="file" accept="audio/*" onChange={handleFileSelection} />
+          <input type="file" accept="audio/*,video/*,.webm,.mkv" onChange={handleFileSelection} />
           {selectedFile && <p>Selected file: {selectedFile.name}</p>}
           <button
             onClick={transcribeRecording}

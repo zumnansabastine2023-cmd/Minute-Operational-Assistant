@@ -61,6 +61,16 @@ app.add_middleware(
 # Load the Whisper model once at startup
 model = WhisperModel("base", device="cpu", compute_type="int8")
 
+# Recorded Meeting upload protection
+MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
+SUPPORTED_UPLOAD_EXTENSIONS = {
+    # Audio formats
+    '.mp3', '.wav', '.m4a', '.ogg', '.webm', '.flac', '.aac',
+    # Video formats (common meeting recordings)
+    '.mp4', '.mov', '.mkv'
+}
+UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
+
 DEEPGRAM_STREAMING_URL = "wss://api.deepgram.com/v1/listen"
 database_engine: Engine | None = None
 database_schema_ready = False
@@ -1051,25 +1061,54 @@ async def transcribe_audio(
 ):
     temp_file_path = None
     try:
-        # Create a temporary file to store the uploaded audio
-        file_extension = os.path.splitext(file.filename)[1]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+        # Validate file extension
+        filename = file.filename or ""
+        file_ext = os.path.splitext(filename)[1].lower()
+
+        if not file_ext or file_ext not in SUPPORTED_UPLOAD_EXTENSIONS:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=f"Unsupported file format. Supported formats: {', '.join(sorted(SUPPORTED_UPLOAD_EXTENSIONS))}"
+            )
+
+        # Create temporary file with validated extension
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
             temp_file_path = temp_file.name
-            # Save the uploaded file to the temporary location
-            contents = await file.read()
-            temp_file.write(contents)
-        
+
+            # Read and write file in chunks, enforcing size limit
+            total_bytes = 0
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+
+                total_bytes += len(chunk)
+                if total_bytes > MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"File exceeds maximum size of 100 MB."
+                    )
+
+                temp_file.write(chunk)
+
+            # Check for empty file
+            if total_bytes == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Uploaded file is empty."
+                )
+
         # Transcribe the audio using faster-whisper
         segments, info = model.transcribe(temp_file_path)
-        
+
         # Combine all segments into a single transcript
         transcript = " ".join([segment.text for segment in segments])
-        
+
         return {
             "filename": file.filename,
             "transcript": transcript,
         }
-    
+
     finally:
         # Delete the temporary file
         if temp_file_path and os.path.exists(temp_file_path):

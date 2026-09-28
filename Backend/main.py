@@ -1184,6 +1184,40 @@ async def transcribe_audio(
             os.remove(temp_file_path)
 
 
+def deepgram_speaker_segments(words: object, speaker_labels: dict[int, str]) -> list[dict[str, str]]:
+    """Group complete word metadata into turns, updating a connection-local map.
+
+    Reject incomplete metadata as a whole so we never silently drop unlabelled
+    words or assign them to a neighbouring speaker. Validate before changing the
+    mapping; malformed results must not reserve speaker numbers.
+    """
+    if not isinstance(words, list) or not words:
+        return []
+
+    validated_words: list[tuple[int, str]] = []
+    for word in words:
+        if not isinstance(word, dict):
+            return []
+        speaker = word.get("speaker")
+        if type(speaker) is not int or speaker < 0:
+            return []
+        token = word.get("punctuated_word", word.get("word"))
+        if not isinstance(token, str) or not token.strip():
+            return []
+        validated_words.append((speaker, token.strip()))
+
+    segments: list[dict[str, str]] = []
+    for speaker, token in validated_words:
+        if speaker not in speaker_labels:
+            speaker_labels[speaker] = f"Speaker {len(speaker_labels) + 1}"
+        label = speaker_labels[speaker]
+        if segments and segments[-1]["speaker"] == label:
+            segments[-1]["text"] += f" {token}"
+        else:
+            segments.append({"speaker": label, "text": token})
+    return segments
+
+
 @app.websocket("/ws/transcribe")
 async def stream_transcription(websocket: WebSocket):
     """Relay one browser audio stream to Deepgram and return transcript events."""
@@ -1212,9 +1246,11 @@ async def stream_transcription(websocket: WebSocket):
             "language": "en-US",
             "smart_format": "true",
             "interim_results": "true",
+            "diarize": "true",
         }
     )
     deepgram_url = f"{DEEPGRAM_STREAMING_URL}?{query}"
+    speaker_labels: dict[int, str] = {}
 
     try:
         async with connect_to_deepgram(
@@ -1272,13 +1308,18 @@ async def stream_transcription(websocket: WebSocket):
                     alternatives = result.get("channel", {}).get("alternatives", [])
                     text = alternatives[0].get("transcript", "").strip() if alternatives else ""
                     if text:
-                        await websocket.send_json(
-                            {
-                                "type": "transcript",
-                                "text": text,
-                                "is_final": bool(result.get("is_final", False)),
-                            }
-                        )
+                        transcript_message = {
+                            "type": "transcript",
+                            "text": text,
+                            "is_final": bool(result.get("is_final", False)),
+                        }
+                        if transcript_message["is_final"]:
+                            segments = deepgram_speaker_segments(
+                                alternatives[0].get("words"), speaker_labels
+                            )
+                            if segments:
+                                transcript_message["speaker_segments"] = segments
+                        await websocket.send_json(transcript_message)
 
             browser_task = asyncio.create_task(forward_browser_audio())
             deepgram_task = asyncio.create_task(forward_deepgram_transcripts())

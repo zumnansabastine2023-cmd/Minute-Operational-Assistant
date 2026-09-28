@@ -30,6 +30,7 @@ async def test_connection() -> None:
             "language": "en-US",
             "smart_format": "true",
             "interim_results": "true",
+            "diarize": "true",
         }
     )
     url = f"{DEEPGRAM_STREAMING_URL}?{query}"

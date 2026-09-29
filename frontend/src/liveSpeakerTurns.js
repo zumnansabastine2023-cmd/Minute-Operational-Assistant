@@ -1,3 +1,20 @@
+// Require a complete set of finalized labels: never omit unlabelled speech.
+export function canonicalLiveTranscript(turns, plainTranscript) {
+  if (!Array.isArray(turns) || !turns.length || !turns.every(
+    (turn) => turn && typeof turn === 'object'
+      && typeof turn.speaker === 'string' && /^Speaker [1-9]\d*$/.test(turn.speaker.trim())
+      && typeof turn.text === 'string' && turn.text.trim(),
+  )) return plainTranscript
+
+  return turns.map(({ speaker, text }) => `${speaker.trim()}: ${text.trim()}`).join('\n')
+}
+
+export function selectMeetingTranscript(meetingType, plainTranscript, liveTurns) {
+  return meetingType === 'live'
+    ? canonicalLiveTranscript(liveTurns, plainTranscript)
+    : plainTranscript
+}
+
 // Missing or partially invalid metadata falls back to the complete plain text.
 export function appendLiveSpeakerTurns(previous, segments, text) {
   const valid = Array.isArray(segments) && segments.length > 0 && segments.every(

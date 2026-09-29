@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { supabase } from './supabaseClient'
-import { appendLiveSpeakerTurns } from './liveSpeakerTurns'
+import { appendLiveSpeakerTurns, selectMeetingTranscript } from './liveSpeakerTurns'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000')
   .replace(/\/+$/, '')
@@ -680,7 +680,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const generateMinutes = async (meetingType, meetingTranscript) => {
-    const cleanedTranscript = meetingTranscript.trim()
+    const cleanedTranscript = selectMeetingTranscript(meetingType, meetingTranscript, liveSpeakerTurns).trim()
     if (!cleanedTranscript || isGeneratingMinutes) return
 
     setIsGeneratingMinutes(true)
@@ -712,7 +712,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const saveMeeting = async (meetingType, meetingTranscript, minutes = null) => {
-    const cleanedTranscript = meetingTranscript.trim()
+    const cleanedTranscript = selectMeetingTranscript(meetingType, meetingTranscript, liveSpeakerTurns).trim()
     if (!cleanedTranscript || isSavingMeeting) {
       if (!cleanedTranscript) {
         setError('A meeting needs a transcript before it can be saved.')

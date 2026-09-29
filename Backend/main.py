@@ -1073,6 +1073,13 @@ action item only if a task was actually discussed or assigned. Use \"Unassigned\
 an action item without an identified owner and \"Not specified\" when no explicit
 deadline is stated. Return empty arrays when a category has no supported items.
 
+Labels such as "Speaker 1" and "Speaker 2" are anonymous speaker labels, not real
+participant names. Preserve speaker attribution when relevant, including using
+the speaker label as the owner of an explicitly stated first-person commitment.
+Never infer a speaker's identity from context or invent a real name. Actual names
+explicitly stated in the transcript may be used normally, but replace a speaker
+label with a name only when the transcript explicitly establishes that identity.
+
 Transcript:
 {transcript}
 """

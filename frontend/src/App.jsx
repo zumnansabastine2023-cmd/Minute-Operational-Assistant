@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { supabase } from './supabaseClient'
+import { appendLiveSpeakerTurns } from './liveSpeakerTurns'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000')
   .replace(/\/+$/, '')
@@ -101,6 +102,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   const [isRecording, setIsRecording] = useState(false)
   const [status, setStatus] = useState('Ready')
   const [transcript, setTranscript] = useState('')
+  const [liveSpeakerTurns, setLiveSpeakerTurns] = useState([])
   const [interimTranscript, setInterimTranscript] = useState('')
   const [selectedFile, setSelectedFile] = useState(null)
   const [recordedTranscript, setRecordedTranscript] = useState('')
@@ -225,6 +227,9 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     setStatus('Connecting')
     setError('')
     setInterimTranscript('')
+    // Each connection has fresh speaker identities. Keep accumulated plain text
+    // visible without attributing an earlier recording to this connection's IDs.
+    setLiveSpeakerTurns(transcript ? [{ speaker: null, text: transcript }] : [])
 
     try {
       const {
@@ -313,6 +318,9 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
               setTranscript((previous) =>
                 previous ? `${previous} ${message.text}` : message.text,
               )
+              setLiveSpeakerTurns((previous) => appendLiveSpeakerTurns(
+                previous, message.speaker_segments, message.text,
+              ))
               setInterimTranscript('')
             } else {
               setInterimTranscript(message.text)
@@ -1110,7 +1118,16 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
           {(transcript || interimTranscript) && (
             <div className="transcript-section">
               <h2>Transcript</h2>
-              {transcript && <p>{transcript}</p>}
+              {liveSpeakerTurns.some((turn) => turn.speaker) ? (
+                <div className="live-speaker-turns">
+                  {liveSpeakerTurns.map((turn, index) => (
+                    <div className="live-speaker-turn" key={index}>
+                      {turn.speaker && <strong className="live-speaker-label">{turn.speaker}</strong>}
+                      <p>{turn.text}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : transcript && <p>{transcript}</p>}
               {interimTranscript && <p className="transcribing">{interimTranscript}</p>}
             </div>
           )}

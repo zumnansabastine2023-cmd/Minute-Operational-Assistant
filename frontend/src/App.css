@@ -174,3 +174,11 @@
 @media(prefers-reduced-motion:reduce){.minutes-hub .minutes-entry,.minutes-hub .minutes-entry>svg{transition:none}.minutes-hub .minutes-entry:hover>svg{transform:none}}
 @media(max-width:900px){.minutes-hub .minutes-entry-meta small{width:auto;padding-left:0;border-left:0;text-align:left}.minutes-hub .minutes-entry-copy small{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere}.minutes-hub .minutes-entry{grid-template-columns:40px minmax(0,1fr) 18px;gap:9px 13px}.minutes-hub .minutes-type-icon{width:40px;height:40px;align-self:start}.minutes-hub .minutes-entry-meta{grid-column:2;display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:8px 12px}.minutes-hub .minutes-entry>svg{grid-column:3;grid-row:1/3}.minutes-hub .minutes-hero::before{width:90%;right:-25%}}
 @media(max-width:480px){.minutes-hub .minutes-hero{display:flex;flex-direction:column;gap:12px;padding-bottom:14px}.minutes-hub .minutes-hero .primary-button{margin-top:0}.minutes-hub .minutes-hero::before{right:-40%;width:110%}.minutes-hub .minutes-library-header{padding:12px 14px;gap:8px;flex-wrap:wrap}.minutes-hub .minutes-library-header h3{font-size:17px}.minutes-hub .minutes-entry{padding:16px 14px;gap:9px 10px;grid-template-columns:36px minmax(0,1fr) 16px}.minutes-hub .minutes-type-icon{width:36px;height:36px;border-radius:11px}.minutes-hub .minutes-entry-copy strong{font-size:14px}.minutes-hub .minutes-entry-copy small{font-size:12px}.minutes-hub .minutes-state{padding-inline:18px}}
+
+/* Live Meeting speaker turns: scoped to the live transcript display. */
+.live-speaker-turns { min-width: 0; }
+.live-speaker-turn { padding: 12px 0; overflow-wrap: anywhere; }
+.live-speaker-turn:first-child { padding-top: 0; }
+.live-speaker-turn + .live-speaker-turn { border-top: 1px solid var(--border); }
+.live-speaker-label { display: block; margin-bottom: 5px; color: var(--accent); font-size: 12px; font-weight: 650; }
+.live-speaker-turn p { margin: 0; color: var(--text-secondary); line-height: 1.7; white-space: pre-wrap; }

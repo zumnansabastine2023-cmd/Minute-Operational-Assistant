@@ -1,0 +1,9 @@
+.output-tools { margin: 18px 0; padding: 12px 0; border-top: 1px solid var(--border); }
+.output-tools>div { display: flex; gap: 7px; flex-wrap: wrap; }
+.output-tools button, .meeting-extended-filters button { border: 1px solid var(--border); background: var(--surface-muted); color: var(--text-primary); padding: 8px 11px; border-radius: 7px; font: inherit; font-size: 12px; }
+.output-tools p { color: var(--text-secondary); font-size: 12px; }
+.meeting-extended-filters { padding: 14px 0; }
+.meeting-extended-filters input, .meeting-extended-filters select { background: var(--surface-raised); color: var(--text-primary); border: 1px solid var(--border); border-radius: 7px; padding: 8px; }
+.live-speaker-label, .meeting-transcript p, .assistant-sources button { overflow-wrap: anywhere; }
+button:disabled { cursor: not-allowed; opacity: .6; }
+@media (max-width: 600px) { .summary-dates>label { width: 100%; } .output-tools button { flex: 1 1 44%; } .meeting-extended-filters { gap: 8px; } }

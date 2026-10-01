@@ -1,7 +1,33 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import './ProductDesign.css'
+import './VisualExperience.css'
+import './VisualLock.css'
+import { MeetingRow, SectionHeader, MemoryDecisions } from './ExperiencePrimitives'
+import { DuneMotif, MoaCompanion } from './BrandArtwork'
+import Settings from './Settings'
+import { readLastWorkspace, writeLastWorkspace, recordingPreferences } from './workspacePreferences'
 import { supabase } from './supabaseClient'
 import { appendLiveSpeakerTurns, selectMeetingTranscript } from './liveSpeakerTurns'
+import SpeakerTranscript from './SpeakerTranscript'
+import MinutesEditor from './MinutesEditor'
+import WeeklySummary from './WeeklySummary'
+import AskMoaSync from './AskMoaSync'
+import SpeakerModeSelector from './SpeakerModeSelector'
+import { resetSpeakerMode, speakerSocketUrl } from './speakerModes'
+import { signOutAccount } from './accountSession'
+import { readOnboarding, writeOnboarding } from './onboarding'
+import WorkspaceOnboarding from './WorkspaceOnboarding'
+import WorkspacePicker from './WorkspacePicker'
+import { CompanyDashboard, CompanyActions } from './CompanyViews'
+import './CompanyWorkspace.css'
+import { availableWorkspace, canManageWorkspace, meetingBelongsToWorkspace, workspaceKey, workspaceRequest, workspaceUrl } from './workspaceScope'
+import OutputTools from './OutputTools'
+import { filterMeetings } from './meetingFilters'
+import { recorderIsActive, releaseCaptureResources } from './captureLifecycle'
+import { parseRecordingJob, pollRecordingJob, storedRecordingJob, storedRecordingMode } from './recordingJobs'
+import { companyData } from './companyData'
+import { normalizeMinutes, isMinutesResponse, isMeetingResponse } from './minutesData'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000')
   .replace(/\/+$/, '')
@@ -9,7 +35,7 @@ const WEBSOCKET_BASE_URL = API_BASE_URL
   .replace(/^https:/i, 'wss:')
   .replace(/^http:/i, 'ws:')
 const TRANSCRIPTION_SOCKET_URL = `${WEBSOCKET_BASE_URL}/ws/transcribe`
-const RECORDED_TRANSCRIPTION_URL = `${API_BASE_URL}/transcribe`
+const RECORDED_TRANSCRIPTION_URL = `${API_BASE_URL}/transcription-jobs`
 const MINUTES_GENERATION_URL = `${API_BASE_URL}/generate-minutes`
 const MEETINGS_API_URL = `${API_BASE_URL}/meetings`
 const ASSISTANT_CHAT_URL = `${API_BASE_URL}/assistant/chat`
@@ -55,37 +81,22 @@ function MoaMark({ size = 42 }) {
   )
 }
 
-function AssistantMascot({ size = 48 }) {
-  return (
-    <svg className="assistant-mascot" width={size} height={size} viewBox="0 0 64 64" fill="none" aria-hidden="true">
-      <defs>
-        <linearGradient id="moa-bot-shell" x1="15" y1="12" x2="49" y2="55" gradientUnits="userSpaceOnUse"><stop stopColor="#FFFFFF" /><stop offset=".58" stopColor="#E4F3EA" /><stop offset="1" stopColor="#A9D6BE" /></linearGradient>
-        <linearGradient id="moa-bot-face" x1="17" y1="20" x2="47" y2="44" gradientUnits="userSpaceOnUse"><stop stopColor="#19382D" /><stop offset="1" stopColor="#07140F" /></linearGradient>
-        <filter id="moa-eye-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="1.7" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
-      </defs>
-      <path d="M32 11V7" stroke="#75D9A4" strokeWidth="2.5" strokeLinecap="round" /><circle cx="32" cy="5" r="2.3" fill="#A7F3D0" />
-      <path d="M12 31H8c-2 0-3.5 1.6-3.5 3.5v5C4.5 42 6 43.5 8 43.5h4M52 31h4c2 0 3.5 1.6 3.5 3.5v5c0 2-1.5 3.5-3.5 3.5h-4" fill="#17A871" stroke="#76DDA8" strokeWidth="1.5" />
-      <path d="M16 64c1.2-8.4 7.1-13 16-13s14.8 4.6 16 13H16Z" fill="url(#moa-bot-shell)" stroke="#A9D6BE" strokeWidth="1.2" />
-      <path d="M25 53c1.7 3.3 12.3 3.3 14 0v8H25v-8Z" fill="#7EBE9D" />
-      <path d="M11 29c0-10.5 8.5-18 21-18s21 7.5 21 18v12c0 9-7.3 16-16.3 16h-9.4C18.3 57 11 50 11 41V29Z" fill="url(#moa-bot-shell)" stroke="#B8E7CD" strokeWidth="1.3" />
-      <rect x="15.5" y="19" width="33" height="27" rx="11" fill="url(#moa-bot-face)" stroke="#2D5D4B" />
-      <path d="M18.5 25c4-5 10-5 14-5h8" stroke="#8ACDAA" strokeOpacity=".18" strokeWidth="2" strokeLinecap="round" />
-      <rect x="21" y="27" width="5.5" height="10" rx="2.75" fill="#82F3B7" filter="url(#moa-eye-glow)" /><rect x="37.5" y="27" width="5.5" height="10" rx="2.75" fill="#82F3B7" filter="url(#moa-eye-glow)" />
-      <path d="M23 53.5v4M41 53.5v4" stroke="#91C9A9" strokeWidth="4" strokeLinecap="round" />
-    </svg>
-  )
+function AssistantMascot({ size = 48, state = 'idle' }) {
+  return <MoaCompanion size={size} state={state} />
 }
 
 async function authenticatedFetch(url, options = {}) {
+  const { expectedUserId, ...fetchOptions } = options
   const {
     data: { session },
   } = await supabase.auth.getSession()
-  if (!session?.access_token) {
+  options.signal?.throwIfAborted()
+  if (!session?.access_token || (expectedUserId && expectedUserId !== session.user.id)) {
     throw new Error('Your session is no longer valid. Please sign in again.')
   }
 
   const response = await fetch(url, {
-    ...options,
+    ...fetchOptions,
     headers: {
       ...options.headers,
       Authorization: `Bearer ${session.access_token}`,
@@ -94,25 +105,141 @@ async function authenticatedFetch(url, options = {}) {
   if (response.status === 401) {
     throw new Error('Your session is no longer valid. Please sign in again.')
   }
+  if (response.status === 429) {
+    throw new Error('The service is busy or the request limit was reached. Please wait a minute and retry.')
+  }
   return response
 }
 
-function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
+function WorkspaceApplication(props) {
+  const [onboarding, setOnboarding] = useState(() => readOnboarding(props.session.user.email))
+  const finishOnboarding = () => { writeOnboarding(null); setOnboarding(null) }
+  const [organizations, setOrganizations] = useState([])
+  const [selectedId, setSelectedId] = useState(() => readLastWorkspace(props.session.user.id))
+  const [workspaceReady, setWorkspaceReady] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState('')
+  const active = useRef(true)
+  const companyController = useRef(null)
+  const refreshCompanies = useCallback(async () => {
+    companyController.current?.abort()
+    const controller = new AbortController()
+    companyController.current = controller
+    try {
+      const response = await authenticatedFetch(`${API_BASE_URL}/organizations`, { signal: controller.signal, expectedUserId: props.session.user.id })
+      if (!response.ok) throw new Error('Unable to load company workspaces. Personal is still available.')
+      const companies = await response.json()
+      if (!Array.isArray(companies) || !companies.every(company => typeof company.id === 'string' && typeof company.name === 'string' && ['admin', 'member'].includes(company.role))) throw new Error('Invalid workspace response. Please retry.')
+      if (!active.current || controller.signal.aborted) return
+      setOrganizations(companies)
+      setSelectedId(current => availableWorkspace(current, companies)?.id || '')
+      setWorkspaceError('')
+      setWorkspaceReady(true)
+    } catch (error) {
+      if (active.current && !controller.signal.aborted) { setWorkspaceError(error.message); setSelectedId(''); setWorkspaceReady(true) }
+    }
+  }, [props.session.user.id])
+  useEffect(() => {
+    active.current = true
+    queueMicrotask(() => { if (active.current) refreshCompanies() })
+    window.addEventListener('focus', refreshCompanies)
+    return () => { active.current = false; companyController.current?.abort(); window.removeEventListener('focus', refreshCompanies) }
+  }, [refreshCompanies])
+  useEffect(() => { if (workspaceReady) writeLastWorkspace(props.session.user.id, selectedId) }, [selectedId, workspaceReady, props.session.user.id])
+  const accessChanged = useCallback(() => {
+    setSelectedId('')
+    setWorkspaceError('Company access changed. You have returned to Personal.')
+    refreshCompanies()
+  }, [refreshCompanies])
+  const workspace = availableWorkspace(selectedId, organizations)
+  const selectWorkspace = id => {
+    if (id === selectedId) return
+    if (!window.confirm('Switch workspace? Unsaved drafts will be cleared and active capture will stop.')) return
+    setSelectedId(availableWorkspace(id, organizations)?.id || '')
+  }
+  const organizationRequest = useCallback((suffix, options) => authenticatedFetch(`${API_BASE_URL}/organizations${suffix}`, { ...options, expectedUserId: props.session.user.id }), [props.session.user.id])
+  const picker = <WorkspacePicker showMemberships={!onboarding} initialForm={['create', 'join'].includes(onboarding) ? onboarding : ''} workspace={workspace} organizations={organizations} onSelect={selectWorkspace}
+    error={workspaceError} request={organizationRequest}
+    onCreated={company => { if (!active.current) return; companyController.current?.abort(); setOrganizations(current => [...current.filter(item => item.id !== company.id), company]); setSelectedId(company.id); finishOnboarding() }} />
+  if (!workspaceReady) return <main className="startup-status" role="status">Opening your workspace...</main>
+  if (onboarding) return <WorkspaceOnboarding theme={props.theme} choice={onboarding} onChoose={setOnboarding} onPersonal={() => { setSelectedId(''); finishOnboarding() }} picker={picker} />
+  return <ScopedApplication key={workspaceKey(props.session.user.id, workspace)} {...props}
+    workspace={workspace} workspacePicker={picker} organizations={organizations} onSelectWorkspace={selectWorkspace} onAccessChanged={accessChanged} onWorkspaceUpdated={refreshCompanies} />
+}
+
+function ScopedApplication(props) {
+  const controller = useRef(new AbortController())
+  useLayoutEffect(() => {
+    if (controller.current.signal.aborted) controller.current = new AbortController()
+    return () => controller.current.abort()
+  }, [])
+  const request = useMemo(() => (...args) => workspaceRequest(authenticatedFetch, props.workspace,
+    props.session.user.id, controller.current.signal, props.onAccessChanged)(...args),
+  [props.workspace, props.session.user.id, props.onAccessChanged])
+  return <MainApplication {...props} authenticatedFetch={request} />
+}
+
+export function MainApplication({ session, onSignOut, authError, theme, setTheme, workspace, workspacePicker, organizations, onSelectWorkspace, authenticatedFetch, onAccessChanged, onWorkspaceUpdated }) {
+  const canManage = canManageWorkspace(workspace)
+  const [editingMinutes, setEditingMinutes] = useState(false)
+  const [assignees, setAssignees] = useState([])
+  const [assigneeError, setAssigneeError] = useState('')
+  useEffect(() => {
+    if (!workspace || workspace.role !== 'admin') return
+    const controller = new AbortController()
+    authenticatedFetch(`${API_BASE_URL}/organizations/${workspace.id}/members`, { signal: controller.signal }).then(async response => {
+      if (!response.ok) throw new Error('Unable to load assignees. Reopen this workspace to retry.')
+      const members = await response.json()
+      if (!controller.signal.aborted) setAssignees(members)
+    }).catch(error => { if (!controller.signal.aborted) setAssigneeError(error.message) })
+    return () => controller.abort()
+  }, [workspace, authenticatedFetch])
+  const [notice, setNotice] = useState('')
+  const [syncVersion, setSyncVersion] = useState(0)
   const [mode, setMode] = useState('dashboard')
+  const [navigationOpen, setNavigationOpen] = useState(false)
+  const navigationRef = useRef(null)
+  const navigationTriggerRef = useRef(null)
+  useEffect(() => {
+    if (!navigationOpen) return
+    const drawer = navigationRef.current
+    const focusFrame = requestAnimationFrame(() => drawer?.querySelector('button')?.focus())
+    const keydown = event => {
+      if (event.key === 'Escape') { setNavigationOpen(false); navigationTriggerRef.current?.focus() }
+      if (event.key === 'Tab') {
+        const controls = [...drawer.querySelectorAll('button')].filter(node => node.getClientRects().length)
+        const first = controls[0], last = controls.at(-1)
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+      }
+    }
+    document.addEventListener('keydown', keydown)
+    const desktop = window.matchMedia('(min-width: 761px)')
+    const closeOnDesktop = event => { if (event.matches) setNavigationOpen(false) }
+    desktop.addEventListener('change', closeOnDesktop)
+    return () => { cancelAnimationFrame(focusFrame); document.removeEventListener('keydown', keydown); desktop.removeEventListener('change', closeOnDesktop) }
+  }, [navigationOpen])
+  const [editRequest, setEditRequest] = useState(0)
   const [isRecording, setIsRecording] = useState(false)
   const [status, setStatus] = useState('Ready')
   const [transcript, setTranscript] = useState('')
   const [liveSpeakerTurns, setLiveSpeakerTurns] = useState([])
+  const [speakerNames, setSpeakerNames] = useState({ live: {}, online: {}, recorded: {} })
+  const [speakerModes, setSpeakerModes] = useState(() => ({ live: recordingPreferences(session.user.id).speakerMode, online: recordingPreferences(session.user.id).speakerMode, recorded: storedRecordingJob(session.user.id, undefined, undefined, workspace?.id) ? storedRecordingMode(session.user.id, workspace?.id) : recordingPreferences(session.user.id).speakerMode }))
   const [interimTranscript, setInterimTranscript] = useState('')
   const [selectedFile, setSelectedFile] = useState(null)
   const [recordedTranscript, setRecordedTranscript] = useState('')
-  const [isTranscribingRecording, setIsTranscribingRecording] = useState(false)
+  const [recordedSpeakerTurns, setRecordedSpeakerTurns] = useState([])
+  const [isTranscribingRecording, setIsTranscribingRecording] = useState(() => Boolean(storedRecordingJob(session.user.id, undefined, undefined, workspace?.id)))
+  const [recordingJobId, setRecordingJobId] = useState(() => storedRecordingJob(session.user.id, undefined, undefined, workspace?.id))
+  const [recordingProgress, setRecordingProgress] = useState('')
+  const [recordingPollAttempt, setRecordingPollAttempt] = useState(0)
   const [liveMinutes, setLiveMinutes] = useState(null)
   const [recordedMinutes, setRecordedMinutes] = useState(null)
   const [onlineMinutes, setOnlineMinutes] = useState(null)
   const [onlineStatus, setOnlineStatus] = useState('Idle')
   const [isOnlineCapturing, setIsOnlineCapturing] = useState(false)
   const [onlineTranscript, setOnlineTranscript] = useState('')
+  const [onlineSpeakerTurns, setOnlineSpeakerTurns] = useState([])
   const [onlineInterimTranscript, setOnlineInterimTranscript] = useState('')
   const [isGeneratingMinutes, setIsGeneratingMinutes] = useState(false)
   const [meetings, setMeetings] = useState([])
@@ -127,8 +254,8 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   const [isNewMeetingOpen, setIsNewMeetingOpen] = useState(false)
   const [meetingFilter, setMeetingFilter] = useState('all')
   const [meetingSearchQuery, setMeetingSearchQuery] = useState('')
-  const [meetingSearchResults, setMeetingSearchResults] = useState(null)
-  const [isSearchingMeetings, setIsSearchingMeetings] = useState(false)
+  const [appliedSearch, setAppliedSearch] = useState('')
+  const [dateFilters, setDateFilters] = useState({ start: '', end: '', actionStatus: 'all' })
   const [activeMeetingTab, setActiveMeetingTab] = useState('overview')
   const [assistantMessages, setAssistantMessages] = useState([
     {
@@ -152,6 +279,47 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   const isOnlineSessionActiveRef = useRef(false)
   const isOnlineStoppingRef = useRef(false)
   const onlineAttemptRef = useRef(0)
+  const selectionAttemptRef = useRef(0)
+  const profileMenuRef = useRef(null)
+  const profileButtonRef = useRef(null)
+  const accountActiveRef = useRef(true)
+
+  useEffect(() => {
+    accountActiveRef.current = true
+    return () => { accountActiveRef.current = false }
+  }, [])
+
+  useEffect(() => {
+    if (!isProfileMenuOpen) return
+    const dismissOutside = (event) => {
+      if (!profileMenuRef.current?.contains(event.target)) setIsProfileMenuOpen(false)
+    }
+    const dismissEscape = (event) => {
+      if (event.key === 'Escape') {
+        setIsProfileMenuOpen(false)
+        profileButtonRef.current?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', dismissOutside)
+    document.addEventListener('focusin', dismissOutside)
+    document.addEventListener('keydown', dismissEscape)
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside)
+      document.removeEventListener('focusin', dismissOutside)
+      document.removeEventListener('keydown', dismissEscape)
+    }
+  }, [isProfileMenuOpen])
+
+  useEffect(() => {
+    const recorders = [mediaRecorderRef, onlineMediaRecorderRef]
+    const streams = [streamRef, onlineDisplayStreamRef]
+    const sockets = [webSocketRef, onlineWebSocketRef]
+    const active = [isSessionActiveRef, isOnlineSessionActiveRef]
+    return () => {
+      active.forEach((ref) => { ref.current = false })
+      releaseCaptureResources(recorders, streams, sockets)
+    }
+  }, [])
 
   useEffect(() => {
     let isCurrent = true
@@ -163,6 +331,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
           throw new Error(`History request failed: ${response.status}`)
         }
         const loadedMeetings = await response.json()
+        if (!Array.isArray(loadedMeetings) || !loadedMeetings.every((meeting) => isMeetingResponse(meeting) && meetingBelongsToWorkspace(meeting, workspace))) throw new Error('Meeting history returned an invalid workspace response. Please reload.')
         if (isCurrent) {
           setMeetings(Array.isArray(loadedMeetings) ? loadedMeetings : [])
           setHistoryError('')
@@ -182,7 +351,45 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     return () => {
       isCurrent = false
     }
-  }, [])
+  }, [authenticatedFetch, workspace])
+
+  useEffect(() => {
+    const warn = (event) => { if (editingMinutes) { event.preventDefault(); event.returnValue = '' } }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [editingMinutes])
+
+  useEffect(() => {
+    if (!recordingJobId) return
+    const controller = new AbortController()
+    let terminal = false
+    pollRecordingJob(
+      (signal) => authenticatedFetch(`${RECORDED_TRANSCRIPTION_URL}/${recordingJobId}`, { signal }),
+      (status) => { setRecordingProgress(status); terminal = status === 'Failed' }, controller.signal,
+    ).then((data) => {
+      if (!data || controller.signal.aborted) return
+      setRecordedTranscript(data.transcript)
+      const completedMode = data.speaker_mode === 'single' ? 'single' : 'multi'
+      setSpeakerModes((previous) => ({ ...previous, recorded: completedMode }))
+      setRecordedSpeakerTurns(completedMode === 'single' ? [] : appendLiveSpeakerTurns([], data.speaker_segments, data.transcript))
+      setSpeakerNames((previous) => ({ ...previous, recorded: {} }))
+      setRecordedMinutes(null)
+      setRecordingProgress(data.transcript.trim() ? 'Completed' : 'Completed — no speech was detected.')
+      setIsTranscribingRecording(false)
+      storedRecordingJob(session.user.id, null, undefined, workspace?.id)
+      setRecordingJobId(null)
+    }).catch((error) => {
+      if (controller.signal.aborted) return
+      setError(error.message)
+      setIsTranscribingRecording(false)
+      setRecordingProgress('Unable to complete processing. Retry when ready.')
+      if (terminal || error.message.includes('expired')) {
+        storedRecordingJob(session.user.id, null, undefined, workspace?.id)
+        setRecordingJobId(null)
+      }
+    }).finally(() => { if (!controller.signal.aborted) setIsTranscribingRecording(false) })
+    return () => controller.abort()
+  }, [recordingJobId, recordingPollAttempt, session.user.id, workspace?.id, authenticatedFetch])
 
   const releaseMicrophone = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop())
@@ -190,6 +397,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const stopRecording = () => {
+    if (isStoppingRef.current) return
     if (!isSessionActiveRef.current && !isStoppingRef.current) return
 
     recordingAttemptRef.current += 1
@@ -199,7 +407,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     setInterimTranscript('')
 
     const mediaRecorder = mediaRecorderRef.current
-    const willFinalizeRecorder = mediaRecorder?.state !== 'inactive'
+    const willFinalizeRecorder = recorderIsActive(mediaRecorder)
     if (willFinalizeRecorder) {
       mediaRecorder.stop()
     } else {
@@ -219,7 +427,9 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const startRecording = async () => {
-    if (isSessionActiveRef.current || isStoppingRef.current) return
+    if (!canManage) return
+    if (isSessionActiveRef.current || isStoppingRef.current || isGeneratingMinutes || isSavingMeeting || editingMinutes) return
+    if (transcript && !window.confirm('Start a new Live Meeting? Save the current draft first if you need it.')) return
 
     const recordingAttempt = recordingAttemptRef.current + 1
     recordingAttemptRef.current = recordingAttempt
@@ -227,9 +437,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     setStatus('Connecting')
     setError('')
     setInterimTranscript('')
-    // Each connection has fresh speaker identities. Keep accumulated plain text
-    // visible without attributing an earlier recording to this connection's IDs.
-    setLiveSpeakerTurns(transcript ? [{ speaker: null, text: transcript }] : [])
+
 
     try {
       const {
@@ -274,6 +482,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         setStatus('Error')
         isSessionActiveRef.current = false
         setIsRecording(false)
+        releaseMicrophone()
         webSocketRef.current?.close()
       }
 
@@ -288,7 +497,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         }
       }
 
-      const socket = new WebSocket(TRANSCRIPTION_SOCKET_URL, ['access-token', session.access_token])
+      const socket = new WebSocket(workspaceUrl(speakerSocketUrl(TRANSCRIPTION_SOCKET_URL, speakerModes.live), workspace), ['access-token', session.access_token])
       webSocketRef.current = socket
 
       socket.onopen = () => {
@@ -299,6 +508,10 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
 
         try {
           mediaRecorder.start(AUDIO_CHUNK_INTERVAL_MS)
+          setTranscript('')
+          setLiveSpeakerTurns([])
+          setLiveMinutes(null)
+          setSpeakerNames((previous) => ({ ...previous, live: {} }))
           setIsRecording(true)
           setStatus('Recording')
         } catch {
@@ -311,21 +524,22 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       }
 
       socket.onmessage = (event) => {
+        if (webSocketRef.current !== socket) return
         try {
           const message = JSON.parse(event.data)
-          if (message.type === 'transcript' && message.text) {
-            if (message.is_final) {
+          if (message?.type === 'transcript' && typeof message.text === 'string' && message.text.trim()) {
+            if (message.is_final === true) {
               setTranscript((previous) =>
                 previous ? `${previous} ${message.text}` : message.text,
               )
-              setLiveSpeakerTurns((previous) => appendLiveSpeakerTurns(
+              if (speakerModes.live === 'multi') setLiveSpeakerTurns((previous) => appendLiveSpeakerTurns(
                 previous, message.speaker_segments, message.text,
               ))
               setInterimTranscript('')
             } else {
               setInterimTranscript(message.text)
             }
-          } else if (message.type === 'error') {
+          } else if (message?.type === 'error') {
             setError(message.message || 'The transcription service reported an error.')
             setStatus('Error')
           }
@@ -339,10 +553,10 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         setError('Unable to connect to the transcription service.')
       }
 
-      socket.onclose = () => {
-        if (webSocketRef.current === socket) {
-          webSocketRef.current = null
-        }
+      socket.onclose = (event) => {
+        if (workspace && event.code === 1008) onAccessChanged()
+        if (webSocketRef.current !== socket) return
+        webSocketRef.current = null
 
         const wasStopping = isStoppingRef.current
         const wasRecording = isSessionActiveRef.current
@@ -389,6 +603,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const stopOnlineMeeting = () => {
+    if (isOnlineStoppingRef.current) return
     if (!isOnlineSessionActiveRef.current && !isOnlineStoppingRef.current) return
 
     onlineAttemptRef.current += 1
@@ -398,7 +613,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     setOnlineInterimTranscript('')
 
     const recorder = onlineMediaRecorderRef.current
-    if (recorder?.state !== 'inactive') {
+    if (recorderIsActive(recorder)) {
       recorder.stop()
     } else {
       releaseOnlineDisplayCapture()
@@ -413,16 +628,16 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const startOnlineMeeting = async () => {
-    if (isOnlineSessionActiveRef.current || isOnlineStoppingRef.current) return
+    if (!canManage) return
+    if (isOnlineSessionActiveRef.current || isOnlineStoppingRef.current || isGeneratingMinutes || isSavingMeeting || editingMinutes) return
+    if (onlineTranscript && !window.confirm('Start a new Online Meeting? Save the current draft first if you need it.')) return
 
     const attempt = onlineAttemptRef.current + 1
     onlineAttemptRef.current = attempt
     isOnlineSessionActiveRef.current = true
     setOnlineStatus('Connecting')
     setError('')
-    setOnlineTranscript('')
     setOnlineInterimTranscript('')
-    setOnlineMinutes(null)
 
     let displayStream
     try {
@@ -494,16 +709,22 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         return
       }
 
-      const socket = new WebSocket(TRANSCRIPTION_SOCKET_URL, ['access-token', activeSession.access_token])
+      if (onlineAttemptRef.current !== attempt || !isOnlineSessionActiveRef.current) return
+
+      const socket = new WebSocket(workspaceUrl(speakerSocketUrl(TRANSCRIPTION_SOCKET_URL, speakerModes.online), workspace), ['access-token', activeSession.access_token])
       onlineWebSocketRef.current = socket
 
       socket.onopen = () => {
-        if (!isOnlineSessionActiveRef.current) {
+        if (onlineWebSocketRef.current !== socket || !isOnlineSessionActiveRef.current) {
           socket.close(1000, 'Online capture was cancelled')
           return
         }
         try {
           recorder.start(AUDIO_CHUNK_INTERVAL_MS)
+          setOnlineTranscript('')
+          setOnlineSpeakerTurns([])
+          setOnlineMinutes(null)
+          setSpeakerNames((previous) => ({ ...previous, online: {} }))
           setIsOnlineCapturing(true)
           setOnlineStatus('Capturing')
         } catch {
@@ -516,16 +737,18 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       }
 
       socket.onmessage = (event) => {
+        if (onlineWebSocketRef.current !== socket) return
         try {
           const message = JSON.parse(event.data)
-          if (message.type === 'transcript' && message.text) {
-            if (message.is_final) {
+          if (message?.type === 'transcript' && typeof message.text === 'string' && message.text.trim()) {
+            if (message.is_final === true) {
               setOnlineTranscript((previous) => previous ? `${previous} ${message.text}` : message.text)
+              if (speakerModes.online === 'multi') setOnlineSpeakerTurns((previous) => appendLiveSpeakerTurns(previous, message.speaker_segments, message.text))
               setOnlineInterimTranscript('')
             } else {
               setOnlineInterimTranscript(message.text)
             }
-          } else if (message.type === 'error') {
+          } else if (message?.type === 'error') {
             setError(message.message || 'The transcription service reported an error.')
             setOnlineStatus('Error')
             stopOnlineMeeting()
@@ -540,8 +763,10 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         setError('Unable to connect to the transcription service.')
       }
 
-      socket.onclose = () => {
-        if (onlineWebSocketRef.current === socket) onlineWebSocketRef.current = null
+      socket.onclose = (event) => {
+        if (workspace && event.code === 1008) onAccessChanged()
+        if (onlineWebSocketRef.current !== socket) return
+        onlineWebSocketRef.current = null
         const wasStopping = isOnlineStoppingRef.current
         const wasCapturing = isOnlineSessionActiveRef.current
         isOnlineStoppingRef.current = false
@@ -574,6 +799,13 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const handleModeChange = (nextMode) => {
+    if (navigationOpen) { setNavigationOpen(false); navigationTriggerRef.current?.focus() }
+    if (!canManage && ['live', 'online', 'recorded'].includes(nextMode)) return
+    if (isSavingMeeting) return
+    if (editingMinutes && !window.confirm('Discard unsaved minutes edits?')) return
+    if (nextMode === mode) return
+    setEditingMinutes(false)
+    setEditRequest(0)
     if (nextMode === 'history') nextMode = 'meetings'
     if (nextMode === mode) return
 
@@ -584,10 +816,14 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       stopOnlineMeeting()
     }
     setError('')
+    selectionAttemptRef.current += 1
+    setIsLoadingSelectedMeeting(false)
     setMode(nextMode)
+    setNotice('')
   }
 
   const handleSignOutClick = () => {
+    if (editingMinutes && !window.confirm('Discard unsaved minutes edits and sign out?')) return
     if (mode === 'live') {
       stopRecording()
     }
@@ -605,6 +841,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       '.mp4', '.mov', '.mkv'
     ]
 
+    if (file.size === 0) return { valid: false, error: 'The selected file is empty.' }
     if (file.size > MAX_SIZE_BYTES) {
       return { valid: false, error: `File exceeds 100 MB limit (${(file.size / 1024 / 1024).toFixed(1)} MB).` }
     }
@@ -631,13 +868,15 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       }
     }
     setSelectedFile(file || null)
-    setRecordedTranscript('')
-    setRecordedMinutes(null)
     setError('')
   }
 
   const transcribeRecording = async () => {
-    if (!selectedFile || isTranscribingRecording) return
+    if (!canManage) return
+    if (isTranscribingRecording || editingMinutes || isGeneratingMinutes) return
+    if (recordingJobId) { setIsTranscribingRecording(true); setError(''); setRecordingPollAttempt((attempt) => attempt + 1); return }
+    if (!selectedFile) return
+    if (recordedTranscript && !window.confirm('Replace this recorded meeting draft when processing succeeds?')) return
 
     const validation = validateUploadFile(selectedFile)
     if (!validation.valid) {
@@ -646,12 +885,13 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     }
 
     setIsTranscribingRecording(true)
-    setRecordedMinutes(null)
+    setRecordingProgress('Uploading recording…')
     setError('')
 
     try {
       const formData = new FormData()
       formData.append('file', selectedFile, selectedFile.name)
+      formData.append('speaker_mode', speakerModes.recorded)
 
       const response = await authenticatedFetch(RECORDED_TRANSCRIPTION_URL, {
         method: 'POST',
@@ -670,19 +910,26 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         }
       }
 
-      const data = await response.json()
-      setRecordedTranscript(data.transcript || '')
+      const job = parseRecordingJob(await response.json())
+      if (!accountActiveRef.current) return
+      storedRecordingJob(session.user.id, job.id, speakerModes.recorded, workspace?.id)
+      setRecordingJobId(job.id)
+      setRecordingProgress(job.status)
     } catch (uploadError) {
       setError(`Unable to transcribe the recording: ${uploadError.message}`)
-    } finally {
+      setRecordingProgress('Upload failed. Please retry.')
       setIsTranscribingRecording(false)
     }
   }
 
   const generateMinutes = async (meetingType, meetingTranscript) => {
-    const cleanedTranscript = selectMeetingTranscript(meetingType, meetingTranscript, liveSpeakerTurns).trim()
+    if (!canManage) return
+    if (editingMinutes || (meetingType === 'recorded' && isTranscribingRecording)) { setError('Finish processing or apply your minutes edits first.'); return }
+    const cleanedTranscript = selectMeetingTranscript(meetingType, meetingTranscript, liveSpeakerTurns, onlineSpeakerTurns, recordedSpeakerTurns, speakerNames, speakerModes).trim()
     if (!cleanedTranscript || isGeneratingMinutes) return
 
+    if (({ live: liveMinutes, online: onlineMinutes, recorded: recordedMinutes })[meetingType]
+      && !window.confirm('Replace the current minutes with newly generated minutes?')) return
     setIsGeneratingMinutes(true)
     setError('')
 
@@ -696,7 +943,9 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
         throw new Error(`Minutes generation failed: ${response.status}`)
       }
 
-      const minutes = await response.json()
+      const payload = await response.json()
+      if (!isMinutesResponse(payload)) throw new Error('The minutes response was invalid. Please retry.')
+      const minutes = normalizeMinutes(payload)
       if (meetingType === 'live') {
         setLiveMinutes(minutes)
       } else if (meetingType === 'online') {
@@ -712,7 +961,9 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const saveMeeting = async (meetingType, meetingTranscript, minutes = null) => {
-    const cleanedTranscript = selectMeetingTranscript(meetingType, meetingTranscript, liveSpeakerTurns).trim()
+    if (!canManage) return
+    if (editingMinutes || (meetingType === 'recorded' && isTranscribingRecording)) { setError('Finish processing or apply your minutes edits first.'); return }
+    const cleanedTranscript = selectMeetingTranscript(meetingType, meetingTranscript, liveSpeakerTurns, onlineSpeakerTurns, recordedSpeakerTurns, speakerNames, speakerModes).trim()
     if (!cleanedTranscript || isSavingMeeting) {
       if (!cleanedTranscript) {
         setError('A meeting needs a transcript before it can be saved.')
@@ -746,8 +997,10 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       }
 
       const savedMeeting = await response.json()
+      if (!isMeetingResponse(savedMeeting) || !meetingBelongsToWorkspace(savedMeeting, workspace)) throw new Error('Invalid workspace save response. Check your meeting history before retrying.')
       setMeetings((currentMeetings) => [savedMeeting, ...currentMeetings])
       setSelectedMeeting(savedMeeting)
+      setNotice(savedMeeting.indexed === false ? 'Meeting saved successfully. Ask MOA could not update its knowledge. Open the saved meeting to retry sync.' : 'Meeting saved.')
     } catch (saveError) {
       setError(`Unable to save the meeting: ${saveError.message}`)
     } finally {
@@ -756,6 +1009,10 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   }
 
   const selectMeeting = async (meetingId, tab = 'overview') => {
+    if (isSavingMeeting || isDeletingMeetingId) return
+    if (editingMinutes && !window.confirm('Discard unsaved minutes edits?')) return
+    setEditingMinutes(false)
+    const attempt = ++selectionAttemptRef.current
     setIsLoadingSelectedMeeting(true)
     setHistoryError('')
     setActiveMeetingTab(tab)
@@ -765,17 +1022,22 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
       if (!response.ok) {
         throw new Error(`Meeting request failed: ${response.status}`)
       }
-      setSelectedMeeting(await response.json())
+      const loaded = await response.json()
+      if (!isMeetingResponse(loaded) || !meetingBelongsToWorkspace(loaded, workspace)) throw new Error('Invalid workspace meeting response. Please retry.')
+      if (selectionAttemptRef.current !== attempt) return
+      setEditRequest(0)
+      setSelectedMeeting(loaded)
+      setNotice('')
       setMode('meetings')
     } catch (meetingLoadError) {
-      setHistoryError(`Unable to load the selected meeting: ${meetingLoadError.message}`)
+      if (selectionAttemptRef.current === attempt) setHistoryError(`Unable to load the selected meeting: ${meetingLoadError.message}`)
     } finally {
-      setIsLoadingSelectedMeeting(false)
+      if (selectionAttemptRef.current === attempt) setIsLoadingSelectedMeeting(false)
     }
   }
 
   const deleteMeeting = async (meetingId) => {
-    if (isDeletingMeetingId) return
+    if (isDeletingMeetingId || !window.confirm('Delete this meeting permanently?')) return
 
     setIsDeletingMeetingId(meetingId)
     setHistoryError('')
@@ -801,28 +1063,9 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     }
   }
 
-  const searchMeetings = async (event) => {
+  const searchMeetings = (event) => {
     event?.preventDefault()
-    const query = meetingSearchQuery.trim()
-    if (!query) {
-      setMeetingSearchResults(null)
-      return
-    }
-
-    setIsSearchingMeetings(true)
-    setHistoryError('')
-    try {
-      const response = await authenticatedFetch(
-        `${MEETINGS_API_URL}/search?q=${encodeURIComponent(query)}`,
-      )
-      if (!response.ok) throw new Error(`Search request failed: ${response.status}`)
-      const data = await response.json()
-      setMeetingSearchResults(Array.isArray(data.results) ? data.results : [])
-    } catch (searchError) {
-      setHistoryError(`Unable to search meetings: ${searchError.message}`)
-    } finally {
-      setIsSearchingMeetings(false)
-    }
+    setAppliedSearch(meetingSearchQuery.trim())
   }
 
   const openNewMeeting = (nextMode) => {
@@ -899,48 +1142,75 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     }
   }
 
-  const renderMinutes = (minutes) => {
-    if (!minutes) return null
+  const speakerModeLocked = (type) => isGeneratingMinutes || isSavingMeeting || editingMinutes
+    || (type === 'live' && (isRecording || ['Connecting', 'Stopping'].includes(status)))
+    || (type === 'online' && (isOnlineCapturing || ['Connecting', 'Stopping'].includes(onlineStatus)))
+    || (type === 'recorded' && (isTranscribingRecording || Boolean(recordingJobId)))
 
-    const keyPoints = Array.isArray(minutes.key_points) ? minutes.key_points : []
-    const decisions = Array.isArray(minutes.decisions) ? minutes.decisions : []
-    const actionItems = Array.isArray(minutes.action_items) ? minutes.action_items : []
+  const changeSpeakerMode = (type, value) => {
+    if (speakerModeLocked(type) || value === speakerModes[type]) return
+    const fresh = resetSpeakerMode(value)
+    setSpeakerModes((previous) => ({ ...previous, [type]: fresh.mode }))
+    setSpeakerNames((previous) => ({ ...previous, [type]: fresh.names }))
+    ;({ live: setLiveSpeakerTurns, online: setOnlineSpeakerTurns, recorded: setRecordedSpeakerTurns })[type](fresh.turns)
+    ;({ live: setLiveMinutes, online: setOnlineMinutes, recorded: setRecordedMinutes })[type](fresh.minutes)
+  }
 
-    return (
-      <div className="transcript-section">
-        <h2>Meeting Summary</h2>
-        <p>{minutes.summary || 'None identified.'}</p>
+  const renderSpeakerMode = (type) => <SpeakerModeSelector value={speakerModes[type]}
+    disabled={speakerModeLocked(type)} onChange={(value) => changeSpeakerMode(type, value)}
+    hasTranscript={Boolean(({ live: transcript, online: onlineTranscript, recorded: recordedTranscript })[type])} />
 
-        <h2>Key Points</h2>
-        {keyPoints.length > 0 ? (
-          <ul>{keyPoints.map((point, index) => <li key={index}>{point}</li>)}</ul>
-        ) : (
-          <p>None identified.</p>
-        )}
+  const renderTranscript = (type, turns, text) => (
+    <div key={type}><SpeakerTranscript key={speakerModes[type]} turns={speakerModes[type] === 'single' ? [] : turns} transcript={text} names={speakerNames[type]}
+      disabled={isGeneratingMinutes || isSavingMeeting}
+      onRename={(speaker, name) => setSpeakerNames((previous) => ({ ...previous, [type]: { ...previous[type], [speaker]: name } }))}
+      onReset={(speaker) => setSpeakerNames((previous) => ({ ...previous, [type]: { ...previous[type], [speaker]: null } }))} />
+      <OutputTools title={`${type[0].toUpperCase()}${type.slice(1)} Meeting draft`} date={new Date().toISOString()}
+        transcript={selectMeetingTranscript(type, text, liveSpeakerTurns, onlineSpeakerTurns, recordedSpeakerTurns, speakerNames, speakerModes)}
+        minutes={({ live: liveMinutes, online: onlineMinutes, recorded: recordedMinutes })[type]} disabled={editingMinutes || isGeneratingMinutes} />
+    </div>
+  )
 
-        <h2>Decisions</h2>
-        {decisions.length > 0 ? (
-          <ul>{decisions.map((decision, index) => <li key={index}>{decision}</li>)}</ul>
-        ) : (
-          <p>None identified.</p>
-        )}
+  const updateSavedMinutes = async (minutes, title) => {
+    setIsSavingMeeting(true)
+    try {
+      const response = await authenticatedFetch(`${MEETINGS_API_URL}/${selectedMeeting.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, minutes, expected_revision: selectedMeeting.revision }),
+      })
+      if (!response.ok) throw new Error(response.status === 409
+        ? 'This meeting changed elsewhere. Keep a copy of your draft, then reopen the meeting.'
+        : 'Unable to save changes. Please retry.')
+      const updated = await response.json()
+      if (!isMeetingResponse(updated) || !meetingBelongsToWorkspace(updated, workspace)) throw new Error('Invalid workspace save response. Keep your draft and reopen the meeting to check whether it was saved.')
+      setSelectedMeeting(updated)
+      setSyncVersion((version) => version + 1)
+      setMeetings((items) => items.map((item) => item.id === updated.id ? updated : item))
+      setNotice('Changes saved.')
+    } finally { setIsSavingMeeting(false) }
+  }
 
-        <h2>Action Items</h2>
-        {actionItems.length > 0 ? (
-          <ul>
-            {actionItems.map((item, index) => (
-              <li key={index}>
-                <p>Task: {item.task}</p>
-                <p>Owner: {item.owner}</p>
-                <p>Deadline: {item.deadline}</p>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p>None identified.</p>
-        )}
-      </div>
-    )
+  const updateActionStatus = async action => {
+    const response = await authenticatedFetch(`${MEETINGS_API_URL}/${action.meetingId}/actions/${action.index}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_revision: action.revision, status: action.status === 'Completed' ? 'Open' : 'Completed' }),
+    })
+    const updated = await response.json()
+    if (!response.ok) throw new Error(typeof updated.detail === 'string' ? updated.detail : 'Unable to update action.')
+    if (!isMeetingResponse(updated) || !meetingBelongsToWorkspace(updated, workspace)) throw new Error('Invalid action response. Reopen the source meeting.')
+    setMeetings(current => current.map(meeting => meeting.id === updated.id ? updated : meeting))
+    setSelectedMeeting(current => current?.id === updated.id ? updated : current)
+    return updated
+  }
+
+  const renderMinutes = (minutes, type = 'saved') => {
+    if (!minutes && type !== 'saved') return null
+    return <MinutesEditor company={Boolean(workspace)} assignees={assignees} assigneeError={assigneeError} editRequest={type === 'saved' ? editRequest : 0} readOnly={!canManage} key={type === 'saved' ? selectedMeeting?.id : type} minutes={minutes}
+      title={type === 'saved' ? selectedMeeting?.title : ''} saved={type === 'saved'}
+      disabled={isGeneratingMinutes || isSavingMeeting || (type === 'recorded' && isTranscribingRecording)} onEditing={value => { setEditingMinutes(value); if (!value) setEditRequest(0) }}
+      onSave={type === 'saved' ? updateSavedMinutes : async (updated) => {
+        ({ live: setLiveMinutes, online: setOnlineMinutes, recorded: setRecordedMinutes })[type](updated)
+      }} />
   }
 
   const renderMeetingWorkspace = () => {
@@ -949,28 +1219,41 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
     }
     if (!selectedMeeting) return null
 
-    const minutes = selectedMeeting.minutes
+    const minutes = selectedMeeting.minutes ? normalizeMinutes(selectedMeeting.minutes) : null
     const decisions = Array.isArray(minutes?.decisions) ? minutes.decisions : []
     const actionItems = Array.isArray(minutes?.action_items) ? minutes.action_items : []
 
     return (
       <section className="meeting-workspace">
-        <button className="back-link" onClick={() => setSelectedMeeting(null)}>← Meetings</button>
+        <button className="back-link" disabled={isSavingMeeting} onClick={() => { if (!editingMinutes || window.confirm('Discard unsaved minutes edits?')) { setEditingMinutes(false); setEditRequest(0); setSelectedMeeting(null) } }}>← Meetings</button>
+        <AskMoaSync readOnly={!canManage} key={`${selectedMeeting.id}:${selectedMeeting.revision}:${syncVersion}`} meeting={selectedMeeting}
+          url={`${MEETINGS_API_URL}/${selectedMeeting.id}`} request={authenticatedFetch}
+          disabled={!canManage || isSavingMeeting || editingMinutes || Boolean(isDeletingMeetingId)} />
         <header className="meeting-workspace-header">
-          <div><span className={`type-badge ${selectedMeeting.type}`}>{selectedMeeting.type}</span><h2>{selectedMeeting.title}</h2><p>{new Date(selectedMeeting.created_at).toLocaleString()}</p></div>
-          <button className="delete-button" onClick={() => deleteMeeting(selectedMeeting.id)} disabled={isDeletingMeetingId === selectedMeeting.id}>{isDeletingMeetingId === selectedMeeting.id ? 'Deleting...' : 'Delete meeting'}</button>
+          <div><span className={`type-badge ${selectedMeeting.type}`}>{selectedMeeting.type}</span><h2>{selectedMeeting.title}</h2><p>{new Date(selectedMeeting.created_at).toLocaleString()} · {workspace?.name || 'Personal'}</p></div>
+          {canManage && <button className="primary-button" disabled={editingMinutes || isSavingMeeting} onClick={() => { setActiveMeetingTab('minutes'); setEditRequest(value => value + 1); setEditingMinutes(true) }}>Edit Meeting</button>}
+          {canManage && <button className="delete-button" onClick={() => deleteMeeting(selectedMeeting.id)} disabled={editingMinutes || isSavingMeeting || isDeletingMeetingId === selectedMeeting.id}>{isDeletingMeetingId === selectedMeeting.id ? 'Deleting...' : 'Delete meeting'}</button>}
         </header>
-        <div className="meeting-tabs" role="tablist" aria-label="Meeting content">
-          {['overview', 'transcript', 'minutes'].map((tab) => <button key={tab} role="tab" aria-selected={activeMeetingTab === tab} className={activeMeetingTab === tab ? 'active' : ''} onClick={() => setActiveMeetingTab(tab)}>{tab}</button>)}
+
+        <div className="meeting-tabs" role="tablist" aria-label="Meeting content" onKeyDown={event => { if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key) && !editingMinutes && !isSavingMeeting) { event.preventDefault(); const tabs = [...event.currentTarget.querySelectorAll('button')]; const index = tabs.indexOf(document.activeElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length; tabs[next].focus(); tabs[next].click() } }}>
+          {['overview', 'transcript', 'minutes'].map((tab) => <button key={tab} disabled={isSavingMeeting || editingMinutes} role="tab" tabIndex={activeMeetingTab === tab ? 0 : -1} aria-selected={activeMeetingTab === tab} className={activeMeetingTab === tab ? 'active' : ''} onClick={() => { if (!editingMinutes || window.confirm('Discard unsaved minutes edits?')) { setEditingMinutes(false); setActiveMeetingTab(tab) } }}>{tab === 'overview' ? 'Overview' : tab === 'minutes' ? 'Minutes' : 'Transcript'}</button>)}
         </div>
-        {activeMeetingTab === 'overview' && <div className="meeting-overview">
+        <div className={`meeting-reading-grid ${activeMeetingTab === 'overview' ? 'split' : 'focused'}`}>
+        {activeMeetingTab === 'overview' && <article className="meeting-overview meeting-document">
+          <SectionHeader eyebrow="MEETING NOTES" title="Overview" action="Focus minutes" onAction={() => setActiveMeetingTab('minutes')} />
           <section><p className="section-label">SUMMARY</p><p>{minutes?.summary || 'No generated summary is available for this meeting.'}</p></section>
+          {minutes?.key_points?.length > 0 && <section><h3>Discussion</h3><ul>{minutes.key_points.map((point,index) => <li key={index}>{point}</li>)}</ul></section>}
           {decisions.length > 0 && <section><p className="section-label">KEY DECISIONS</p><ul>{decisions.map((decision, index) => <li key={index}>{decision}</li>)}</ul></section>}
-          {actionItems.length > 0 && <section><p className="section-label">ACTION ITEMS</p><ul>{actionItems.map((item, index) => <li key={index}><strong>{item.task}</strong><span>{item.owner} · {item.deadline}</span></li>)}</ul></section>}
+          {actionItems.length > 0 && <section><p className="section-label">ACTION ITEMS</p><ul className="action-rows">{actionItems.map((item, index) => <li key={index}><div><strong>{item.task}</strong><small>{item.owner} / {item.deadline}</small></div><span className={`status-pill ${item.status.toLowerCase()}`}>{item.status}</span></li>)}</ul></section>}
           <section className="meeting-information"><p className="section-label">MEETING INFORMATION</p><dl><div><dt>Type</dt><dd>{selectedMeeting.type}</dd></div><div><dt>Created</dt><dd>{new Date(selectedMeeting.created_at).toLocaleString()}</dd></div></dl></section>
-        </div>}
-        {activeMeetingTab === 'transcript' && <section className="meeting-transcript"><p>{selectedMeeting.transcript}</p></section>}
-        {activeMeetingTab === 'minutes' && <div className="workspace-minutes">{minutes ? renderMinutes(minutes) : <p>No generated minutes are available for this meeting.</p>}</div>}
+        </article>}
+        {['overview','transcript'].includes(activeMeetingTab) && <aside className="meeting-transcript document-transcript"><SectionHeader eyebrow="THE CONVERSATION" title="Transcript" action={activeMeetingTab === 'overview' ? 'Focus transcript' : 'Split view'} onAction={() => setActiveMeetingTab(activeMeetingTab === 'overview' ? 'transcript' : 'overview')}/><div className="transcript-lines">{(selectedMeeting.transcript || 'No transcript available.').split('\n').filter(Boolean).map((line,index) => <p key={index}>{line}</p>)}</div></aside>}
+        {activeMeetingTab === 'minutes' && <div className="workspace-minutes">{renderMinutes(minutes)}</div>}
+        </div>
+        <button className="meeting-context-assistant" disabled={editingMinutes || isSavingMeeting} onClick={() => { setAssistantInput(`Summarize the decisions and next steps from "${selectedMeeting.title}".`); handleModeChange('assistant') }}><MoaCompanion size={42}/><span>Ask MOA about this meeting<small>Explore decisions, owners and next steps</small></span><span aria-hidden="true">↗</span></button>
+        <details className="meeting-exports"><summary>Copy, download & exports</summary>
+        <OutputTools title={selectedMeeting.title} date={selectedMeeting.created_at} transcript={selectedMeeting.transcript} minutes={minutes} disabled={editingMinutes} />
+        </details>
       </section>
     )
   }
@@ -994,8 +1277,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
           {uniqueSources.map((source) => (
             <li key={source.meeting_id}>
               <button onClick={() => selectMeeting(source.meeting_id)}>
-                {source.meeting_title || 'Untitled meeting'} ({source.meeting_type || 'meeting'})
-                {source.meeting_date && ` — ${new Date(source.meeting_date).toLocaleString()}`}
+                {source.meeting_title || 'Untitled meeting'}
               </button>
             </li>
           ))}
@@ -1007,81 +1289,107 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   const isBusy = status === 'Connecting' || status === 'Stopping'
   const userDisplayName = session.user.user_metadata?.full_name || session.user.email
   const userFirstName = userDisplayName?.split(' ')[0] || 'there'
-  const pageTitle = mode === 'dashboard' ? 'Dashboard' : mode === 'meetings' ? 'Meetings' : mode === 'minutes' ? 'Minutes' : mode === 'assistant' ? 'AI Assistant' : mode === 'online' ? 'Online Meeting' : mode === 'settings' ? 'Settings' : mode === 'live' ? 'Live Meeting' : 'Recorded Meeting'
-  const meetingSource = meetingSearchResults || meetings
-  const displayedMeetings = meetingSource.filter((meeting) => meetingFilter === 'all' || meeting.type === meetingFilter)
+  const pageTitle = mode === 'workspaces' ? 'Settings / Workspaces' : mode === 'actions' ? 'Action Items' : mode === 'members' ? 'Members' : mode === 'weekly' ? 'Weekly Summary' : mode === 'dashboard' ? 'Dashboard' : mode === 'meetings' ? 'Meetings' : mode === 'minutes' ? 'Minutes' : mode === 'assistant' ? 'Ask MOA' : mode === 'online' ? 'Online Meeting' : mode === 'settings' ? 'Settings' : mode === 'live' ? 'Live Meeting' : 'Recorded Meeting'
+  const displayedMeetings = filterMeetings(meetings, { ...dateFilters, keyword: appliedSearch, type: meetingFilter })
+  const personalWeek = companyData(meetings.filter(meeting => !meeting.organization_id).map(meeting => ({ ...meeting, organization_id: null })), null)
+  const personalWeekActions = personalWeek.actions.filter(action => { const meeting = meetings.find(item => item.id === action.meetingId); const start = new Date(); start.setUTCHours(0, 0, 0, 0); start.setUTCDate(start.getUTCDate() - (start.getUTCDay() + 6) % 7); return new Date(meeting.created_at) >= start })
   const meetingsWithMinutes = meetings.filter((meeting) => meeting.minutes)
 
   return (
-    <div className={`app-shell ${theme}`}>
-      <aside className="sidebar">
+    <div className={`app-shell ${theme} ${workspace ? 'company-workspace' : 'personal-workspace'}`} data-workspace-kind={workspace ? 'company' : 'personal'}>
+      {navigationOpen && <button className="navigation-backdrop" aria-label="Close navigation" onClick={() => { setNavigationOpen(false); navigationTriggerRef.current?.focus() }} />}
+      <aside ref={navigationRef} id="app-navigation" className={`sidebar ${navigationOpen ? 'navigation-open' : ''}`} role={navigationOpen ? 'dialog' : undefined} aria-modal={navigationOpen || undefined} aria-label="Workspace navigation">
+        <button className="navigation-close" onClick={() => { setNavigationOpen(false); navigationTriggerRef.current?.focus() }}>Close navigation ×</button>
         <div className="brand"><MoaMark /><span><strong>MOA</strong><small>Minutes Operational Assistant</small></span></div>
+        <button className="workspace-indicator" onClick={() => handleModeChange('workspaces')}><span><strong>{workspace?.name || 'Personal'}</strong><small>{workspace ? `Company Workspace / ${workspace.role === 'admin' ? 'Admin' : 'Member'}` : 'Personal Workspace'}</small></span> <Icon name="chevron" size={14} /></button>
         <nav aria-label="Primary navigation">
-          <p className="nav-label">Main</p>
+          <p className="nav-label">{workspace ? 'Company' : 'Main'}</p>
           <button className={`nav-item ${mode === 'dashboard' ? 'active' : ''}`} onClick={() => handleModeChange('dashboard')}><Icon name="home" />Dashboard</button>
           <button className={`nav-item ${mode === 'meetings' ? 'active' : ''}`} onClick={() => handleModeChange('meetings')}><Icon name="clock" />Meetings</button>
           <button className={`nav-item ${mode === 'minutes' ? 'active' : ''}`} onClick={() => handleModeChange('minutes')}><Icon name="upload" />Minutes</button>
           <p className="nav-label">Intelligence</p>
-          <button className={`nav-item ${mode === 'assistant' ? 'active' : ''}`} onClick={() => handleModeChange('assistant')}><span className="nav-assistant-icon"><AssistantMascot size={22} /></span>AI Assistant</button>
+          <button className={`nav-item ${mode === 'assistant' ? 'active' : ''}`} onClick={() => handleModeChange('assistant')}><span className="nav-assistant-icon"><AssistantMascot size={22} /></span>Ask MOA</button>
+          <button className={`nav-item ${mode === 'weekly' ? 'active' : ''}`} onClick={() => handleModeChange('weekly')}><Icon name="clock" />Weekly Summary</button>
+          {workspace && <>
+            <button className={`nav-item ${mode === 'actions' ? 'active' : ''}`} onClick={() => handleModeChange('actions')}><Icon name="clock" />Action Items</button>
+          </>}
         </nav>
         <div className="sidebar-bottom">
           <button className={`nav-item ${mode === 'settings' ? 'active' : ''}`} onClick={() => handleModeChange('settings')}><Icon name="settings" />Settings</button>
-          <div className="sidebar-profile"><span>{userFirstName.charAt(0).toUpperCase()}</span><div><strong>{userDisplayName}</strong><small>Workspace member</small></div></div>
+          <button className="sidebar-profile" aria-label="Open profile" onClick={() => handleModeChange('settings')}><span>{userFirstName.charAt(0).toUpperCase()}</span><div><strong>{userDisplayName}</strong><small>{workspace ? `Company ${workspace.role === 'admin' ? 'Admin' : 'Member'}` : 'Personal account'}</small></div></button>
         </div>
       </aside>
       <main className="main-content">
-      <header className="topbar"><div><p className="eyebrow">MINUTES OPERATIONAL ASSISTANT</p><h1>{pageTitle}</h1></div>
+      <header className="topbar"><button ref={navigationTriggerRef} className="navigation-trigger icon-button" aria-label="Open navigation" aria-controls="app-navigation" aria-expanded={navigationOpen} onClick={() => setNavigationOpen(true)}>☰</button><div><p className="eyebrow">{workspace ? `${workspace.name} / Company Workspace / ${workspace.role === 'admin' ? 'Admin' : 'Member'}` : 'PERSONAL WORKSPACE'}</p><h1>{pageTitle}</h1></div>
       <div className="topbar-actions">
-        {mode === 'dashboard' && <button className="dashboard-new-meeting primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button>}
+
         <button className="icon-button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Toggle color theme"><Icon name={theme === 'dark' ? 'sun' : 'moon'} /></button>
-        <div className="profile-menu-wrap"><button className="profile-trigger" onClick={() => setIsProfileMenuOpen((open) => !open)} aria-expanded={isProfileMenuOpen}><span>{userFirstName.charAt(0).toUpperCase()}</span><strong>{userDisplayName}</strong></button>{isProfileMenuOpen && <div className="profile-menu"><p>Signed in as<br /><strong>{userDisplayName}</strong></p><button onClick={handleSignOutClick}><Icon name="logout" />Sign out</button></div>}</div>
+        <div className="profile-menu-wrap" ref={profileMenuRef}>
+          <button ref={profileButtonRef} className="profile-trigger" aria-label="Account menu"
+            aria-controls="account-menu" aria-expanded={isProfileMenuOpen}
+            onClick={() => setIsProfileMenuOpen((open) => !open)}>
+            <span>{userFirstName.charAt(0).toUpperCase()}</span><strong>{userDisplayName}</strong>
+          </button>
+          {isProfileMenuOpen && <div className="profile-menu" id="account-menu" role="region" aria-label="Account">
+            <div className="account-identity"><strong>{userDisplayName}</strong><small>{workspace ? 'Company account' : 'Personal account'}</small><small>{session.user.email}</small></div>
+            <div className="account-workspaces" aria-label="Switch Workspace">
+              {[{ id: '', name: 'Personal' }, ...organizations].map(company => <button key={company.id} aria-pressed={(workspace?.id || '') === company.id} onClick={() => { onSelectWorkspace(company.id); setIsProfileMenuOpen(false) }}>{(workspace?.id || '') === company.id ? '\u2713 ' : ''}{company.name}</button>)}
+            </div>
+            <button onClick={() => { setIsProfileMenuOpen(false); handleModeChange('settings') }}>Account / Profile</button>
+            <button onClick={() => { setIsProfileMenuOpen(false); handleModeChange('workspaces') }}>Manage Workspaces</button>
+            <button onClick={() => { setIsProfileMenuOpen(false); handleModeChange('settings') }}><Icon name="settings" />Settings</button>
+            <button className="sign-out" onClick={handleSignOutClick}><Icon name="logout" />Sign out</button>
+          </div>}
+        </div>
       </div></header>
       {authError && <p className="error">{authError}</p>}
 
-      {mode === 'dashboard' ? (
-        <section className="dashboard">
-          <div className="dashboard-atmosphere" aria-hidden="true"><i /><i /><i /></div>
-          <div className="dashboard-hero">
-            <p className="eyebrow">MINUTES OPERATIONAL ASSISTANT</p>
+      {workspace && mode === 'dashboard' ? (
+        <CompanyDashboard request={authenticatedFetch} url={`${API_BASE_URL}/organizations/${workspace.id}`} newMeeting={() => setIsNewMeetingOpen(true)} workspace={workspace} meetings={meetings} loading={isLoadingMeetings} openMeeting={selectMeeting} navigate={handleModeChange} />
+      ) : workspace && mode === 'actions' ? (
+        <CompanyActions userId={session.user.id} onStatusChange={updateActionStatus} workspace={workspace} meetings={meetings} openMeeting={selectMeeting} />
+      ) : mode === 'dashboard' ? (
+        <section className="dashboard memory-dashboard">
+          <div className="experience-hero personal-hero"><DuneMotif /><div className="hero-copy"><span className="workspace-context">PERSONAL WORKSPACE</span>
             <h2>Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 18 ? 'afternoon' : 'evening'}, {userFirstName}.</h2>
-            <p>Your meetings, decisions and conversations — organized in one place.</p>
-          </div>
-          <section className="dashboard-capture">
-            <div className="capture-intro"><p className="section-label">START A MEETING</p><h2>Capture the conversation while it matters.</h2></div>
-            <div className="quick-actions">
-              <button onClick={() => handleModeChange('live')}><Icon name="mic" /><strong>Start Live Meeting</strong><span>Transcribe as the conversation happens.</span><Icon name="chevron" /></button>
-              <button onClick={() => handleModeChange('recorded')}><Icon name="upload" /><strong>Upload Recording</strong><span>Turn an existing recording into structured notes.</span><Icon name="chevron" /></button>
-            </div>
-          </section>
-          <div className="dashboard-grid">
-            <div className="recent-meetings">
-              <div><div><p className="section-label">RECENT ACTIVITY</p><h2>Recent meetings</h2></div><button onClick={() => handleModeChange('history')}>View all <Icon name="chevron" size={14} /></button></div>
-              {meetings.slice(0, 3).map((meeting) => <button key={meeting.id} onClick={() => selectMeeting(meeting.id)}><span className="meeting-file-icon"><Icon name="clock" size={15} /></span><span><strong>{meeting.title}</strong><small>{new Date(meeting.created_at).toLocaleString()}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><Icon name="chevron" /></button>)}
-            </div>
-            <div className="assistant-cta">
-              <div className="assistant-card-copy"><p>ASK MOA</p><h2>Ask questions across your meeting knowledge.</h2><span>Search decisions, conversations, and the details that matter.</span><button onClick={() => handleModeChange('assistant')}>Open Assistant <Icon name="chevron" /></button></div>
-              <div className="assistant-card-art" aria-hidden="true"><span>Your AI meeting partner</span><AssistantMascot size={170} /></div>
-            </div>
-          </div>
+            <p>Pick up where you left off. Your meeting memory, always with you.</p>
+            <div className="hero-actions"><button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button><button onClick={() => handleModeChange('recorded')}><Icon name="upload" />Upload Recording</button><button onClick={() => handleModeChange('assistant')}><Icon name="sparkles" />Ask MOA</button></div>
+          </div><div className="hero-companion"><MoaCompanion size={136} /></div></div>
+          <div className="memory-flow"><section className="conversation-feed"><SectionHeader eyebrow="YOUR MEETING MEMORY" title="Recent conversations" action="View all" onAction={() => handleModeChange('meetings')}/>
+            {isLoadingMeetings ? <p role="status">Loading your meetings...</p> : meetings.length ? meetings.slice(0,4).map(meeting => <MeetingRow key={meeting.id} meeting={meeting} compact onOpen={selectMeeting}/>) : <p className="empty-state">Your first conversation starts here. Start a meeting or upload a recording.</p>}
+          </section><section className="next-actions"><SectionHeader eyebrow="PICK UP WHERE YOU LEFT OFF" title="Next actions"/>
+            {personalWeek.open.length ? <ul className="action-rows">{personalWeek.open.slice(0,3).map(action => <li key={action.key}><span className="action-marker" aria-hidden="true"/><div><strong>{action.task}</strong><small>{action.owner} · {action.deadline}</small><button className="text-button" onClick={() => selectMeeting(action.meetingId,'minutes')}>{action.meetingTitle} ↗</button></div><span className="status-pill open">Open</span></li>)}</ul> : <p className="empty-state">A clear next step starts with a conversation. Your open actions will appear here.</p>}
+          </section><section className="week-preview"><SectionHeader eyebrow="THIS WEEK" title="Weekly summary"/><p>You had <strong>{personalWeek.thisWeek} meetings</strong> this week.</p><div className="week-metrics"><span><strong>{personalWeek.thisWeek}</strong><small>Meetings</small></span><span><strong>{personalWeek.decisions.length}</strong><small>Decisions</small></span><span><strong>{personalWeekActions.length}</strong><small>Action items</small></span></div><div className="week-sparkline" aria-hidden="true">{[28,52,35,70,43,78,57,36,66,48,82,62].map((height,index)=><i key={index} style={{height:`${height}%`}} />)}</div><button onClick={() => handleModeChange('weekly')}>View full summary ↗</button></section></div>
+          <div className="memory-footer"><MemoryDecisions decisions={personalWeek.decisions} onOpen={selectMeeting}/></div>
+          <button className="memory-assistant-entry" onClick={() => handleModeChange('assistant')}><MoaCompanion size={46}/><span>Something on your mind?<small>Ask MOA to find the detail you remember.</small></span><span aria-hidden="true">↗</span></button>
         </section>
       ) : mode === 'meetings' ? (
         selectedMeeting ? renderMeetingWorkspace() : <section className="meetings-hub">
-          <header className="page-header meetings-hero"><div><p className="eyebrow">CONVERSATION LIBRARY</p><h2>Meetings</h2><p>Capture, review and manage your conversations.</p></div><button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button></header>
+          <header className="page-header meetings-hero"><div><p className="eyebrow">CONVERSATION LIBRARY</p><h2>Meetings</h2><p>Capture, review and manage your conversations.</p></div>{canManage && <button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button>}</header>
           <div className="meetings-tools">
-            <form className="meeting-search" onSubmit={searchMeetings}><Icon name="search" size={19} /><input value={meetingSearchQuery} onChange={(event) => { setMeetingSearchQuery(event.target.value); if (!event.target.value.trim()) setMeetingSearchResults(null) }} placeholder="Search your meetings..." aria-label="Search meetings" /><button type="submit" disabled={isSearchingMeetings}>{isSearchingMeetings ? 'Searching...' : 'Search'}</button></form>
+            <form className="meeting-search" onSubmit={searchMeetings}><Icon name="search" size={19} /><input value={meetingSearchQuery} onChange={(event) => { setMeetingSearchQuery(event.target.value); if (!event.target.value.trim()) setAppliedSearch('') }} placeholder="Search your meetings..." aria-label="Search meetings" /><button type="submit">Search</button></form>
             <div className="meeting-filters" role="group" aria-label="Meeting type filters">{[['all', 'All'], ['live', 'Live'], ['recorded', 'Recorded'], ['online', 'Online']].map(([filter, label]) => <button type="button" key={filter} className={meetingFilter === filter ? 'active' : ''} onClick={() => setMeetingFilter(filter)}>{label}</button>)}</div>
           </div>
           <section className="meeting-library">
             <header className="meeting-library-header"><div><p className="section-label">YOUR MEETINGS</p><h3>Meeting library</h3></div><span>{displayedMeetings.length} {displayedMeetings.length === 1 ? 'meeting' : 'meetings'}</span></header>
-            <div className="meeting-list">{isLoadingMeetings ? <div className="meetings-empty"><span className="meeting-empty-icon"><Icon name="clock" size={21} /></span><strong>Loading meetings...</strong></div> : displayedMeetings.length === 0 ? <div className="meetings-empty"><span className="meeting-empty-icon"><Icon name="search" size={21} /></span><strong>No meetings found</strong><p>{meetingFilter === 'online' ? 'Online meetings will appear here after you save one.' : 'Try another search or start a new conversation.'}</p></div> : displayedMeetings.map((meeting) => <button className={`meeting-row meeting-row-${meeting.type}`} key={meeting.id} onClick={() => selectMeeting(meeting.id)}><span className="meeting-type-icon"><Icon name={meeting.type === 'live' ? 'mic' : meeting.type === 'online' ? 'video' : 'upload'} size={18} /></span><span className="meeting-row-copy"><strong>{meeting.title}</strong><small>{new Date(meeting.created_at).toLocaleString()}</small></span><span className={`type-badge ${meeting.type}`}>{meeting.type}</span><Icon name="chevron" /></button>)}</div>
+            <div className="summary-dates meeting-extended-filters">
+              <label>From (UTC)<input type="date" value={dateFilters.start} onChange={(event) => setDateFilters({ ...dateFilters, start: event.target.value })} /></label>
+              <label>Through (UTC)<input type="date" value={dateFilters.end} onChange={(event) => setDateFilters({ ...dateFilters, end: event.target.value })} /></label>
+              <label>Action status<select value={dateFilters.actionStatus} onChange={(event) => setDateFilters({ ...dateFilters, actionStatus: event.target.value })}><option value="all">All actions</option><option>Open</option><option>Completed</option></select></label>
+              <button onClick={() => { setDateFilters({ start: '', end: '', actionStatus: 'all' }); setMeetingFilter('all'); setMeetingSearchQuery(''); setAppliedSearch('') }}>Reset filters</button>
+            </div>
+            {dateFilters.start && dateFilters.end && dateFilters.start > dateFilters.end && <p role="alert">The end date must be on or after the start date.</p>}
+            <div className="meeting-list">{isLoadingMeetings ? <div className="meetings-empty"><span className="meeting-empty-icon"><Icon name="clock" size={21} /></span><strong>Loading meetings...</strong></div> : displayedMeetings.length === 0 ? <div className="meetings-empty"><span className="meeting-empty-icon"><Icon name="search" size={21} /></span><strong>No meetings found</strong><p>{meetingFilter === 'online' ? 'Online meetings will appear here after you save one.' : 'Try another search or start a new conversation.'}</p></div> : displayedMeetings.map((meeting) => <MeetingRow key={meeting.id} meeting={meeting} onOpen={selectMeeting} />)}</div>
           </section>
           {historyError && <p className="error">{historyError}</p>}
         </section>
+      ) : mode === 'weekly' ? (
+          <WeeklySummary companyName={workspace?.name} request={(body) => authenticatedFetch(`${API_BASE_URL}/summaries/weekly`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })} openMeeting={selectMeeting} />
       ) : mode === 'minutes' ? (
         <section className="minutes-hub">
           <header className="page-header minutes-hero">
             <div><p className="eyebrow">MEETING KNOWLEDGE</p><h2>Minutes</h2><p>Review the decisions and next steps from your saved meetings.</p></div>
-            <button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button>
+            {canManage && <button className="primary-button" onClick={() => setIsNewMeetingOpen(true)}>+ New Meeting</button>}
           </header>
           <section className="minutes-library" aria-labelledby="minutes-library-title">
             <header className="minutes-library-header">
@@ -1103,14 +1411,15 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
           </section>
         </section>
       ) : mode === 'online' ? (
-        <section className="online-meeting-view"><header><p className="eyebrow">ONLINE MEETING</p><h2>Capture shared meeting audio</h2><p>Share the browser tab containing your meeting and make sure tab audio is enabled.</p></header><div className={`online-capture-state ${onlineStatus.toLowerCase()}`}><span></span><p>{onlineStatus === 'Capturing' ? 'Capturing shared meeting audio' : onlineStatus}</p></div><button className="primary-button online-capture-button" onClick={handleOnlineRecordingToggle} disabled={onlineStatus === 'Connecting' || onlineStatus === 'Stopping'}>{isOnlineCapturing || onlineStatus === 'Stopping' ? 'Stop Online Meeting' : 'Start Online Meeting'}</button><p className="online-capture-hint">For best results, use Chrome or Edge and share the meeting tab with audio.</p>{(onlineTranscript || onlineInterimTranscript) && <div className="transcript-section"><h2>Transcript</h2>{onlineTranscript && <p>{onlineTranscript}</p>}{onlineInterimTranscript && <p className="transcribing">{onlineInterimTranscript}</p>}</div>}{onlineStatus === 'Finished' && onlineTranscript.trim() && <div className="meeting-complete-actions"><button onClick={() => generateMinutes('online', onlineTranscript)} disabled={isGeneratingMinutes}>Generate Minutes</button><button onClick={() => saveMeeting('online', onlineTranscript, onlineMinutes)} disabled={isGeneratingMinutes || isSavingMeeting}>Save Meeting</button></div>}{isGeneratingMinutes && <p className="transcribing">Generating Minutes...</p>}{renderMinutes(onlineMinutes)}</section>
-      ) : mode === 'settings' ? (
-        <div className="transcript-section"><h2>Appearance</h2><p>Choose the theme that is most comfortable for you.</p><button onClick={() => setTheme('light')}>Light</button><button onClick={() => setTheme('dark')}>Dark</button></div>
+        <section className="online-meeting-view">{renderSpeakerMode('online')}<header><p className="eyebrow">ONLINE MEETING</p><h2>Capture shared meeting audio</h2><p>Share the browser tab containing your meeting and make sure tab audio is enabled.</p></header><div className={`online-capture-state ${onlineStatus.toLowerCase()}`}><span></span><p>{onlineStatus === 'Capturing' ? 'Capturing shared meeting audio' : onlineStatus}</p></div><button className="primary-button online-capture-button" onClick={handleOnlineRecordingToggle} disabled={onlineStatus === 'Connecting' || onlineStatus === 'Stopping'}>{isOnlineCapturing || onlineStatus === 'Stopping' ? 'Stop Online Meeting' : 'Start Online Meeting'}</button><p className="online-capture-hint">For best results, use Chrome or Edge and share the meeting tab with audio.</p>{(onlineTranscript || onlineInterimTranscript) && <div className="transcript-section"><h2>Transcript</h2>{renderTranscript('online', onlineSpeakerTurns, onlineTranscript)}{onlineInterimTranscript && <p className="transcribing">{onlineInterimTranscript}</p>}</div>}{['Finished', 'Error'].includes(onlineStatus) && onlineTranscript.trim() && <div className="meeting-complete-actions"><button onClick={() => generateMinutes('online', onlineTranscript)} disabled={isGeneratingMinutes}>Generate Minutes</button><button onClick={() => saveMeeting('online', onlineTranscript, onlineMinutes)} disabled={isGeneratingMinutes || isSavingMeeting}>Save Meeting</button></div>}{isGeneratingMinutes && <p className="transcribing">Generating Minutes...</p>}{renderMinutes(onlineMinutes, 'online')}</section>
+      ) : ['settings', 'workspaces'].includes(mode) ? (
+        <Settings key={mode} initialSection={mode === 'workspaces' ? 'workspace' : 'account'} session={session} workspace={workspace} picker={workspacePicker} theme={theme} setTheme={setTheme} request={authenticatedFetch} url={workspace ? `${API_BASE_URL}/organizations/${workspace.id}` : ''} onChanged={onWorkspaceUpdated} onSignOut={handleSignOutClick} />
       ) : mode === 'history' ? (
         null
       ) : mode === 'live' ? (
         <>
-          <p className="status">{status}</p>
+          {renderSpeakerMode('live')}
+          <div className="capture-companion-status" role="status"><MoaCompanion size={56} state={isRecording ? 'listening' : isBusy ? 'thinking' : 'idle'} /><p>{status}</p></div>
           <button onClick={handleRecordingToggle} className="record-button">
             {isRecording || isBusy ? 'Stop Recording' : 'Start Recording'}
           </button>
@@ -1118,20 +1427,11 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
           {(transcript || interimTranscript) && (
             <div className="transcript-section">
               <h2>Transcript</h2>
-              {liveSpeakerTurns.some((turn) => turn.speaker) ? (
-                <div className="live-speaker-turns">
-                  {liveSpeakerTurns.map((turn, index) => (
-                    <div className="live-speaker-turn" key={index}>
-                      {turn.speaker && <strong className="live-speaker-label">{turn.speaker}</strong>}
-                      <p>{turn.text}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : transcript && <p>{transcript}</p>}
+              {renderTranscript('live', liveSpeakerTurns, transcript)}
               {interimTranscript && <p className="transcribing">{interimTranscript}</p>}
             </div>
           )}
-          {status === 'Ready' && transcript.trim() && (
+          {!isRecording && !isBusy && transcript.trim() && (
             <>
               <button
                 onClick={() => generateMinutes('live', transcript)}
@@ -1148,23 +1448,26 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
             </>
           )}
           {isGeneratingMinutes && <p className="transcribing">Generating Minutes...</p>}
-          {renderMinutes(liveMinutes)}
+          {renderMinutes(liveMinutes, 'live')}
         </>
       ) : mode === 'recorded' ? (
-        <div className="transcript-section">
-          <input type="file" accept="audio/*,video/*,.webm,.mkv" onChange={handleFileSelection} />
+        <div className="recorded-workspace">
+          <header className="dashboard-heading"><p className="eyebrow">RECORDING TO KNOWLEDGE</p><h2>Upload a conversation</h2><p>Bring your audio or video. MOA will help you find the important details.</p></header>
+          {renderSpeakerMode('recorded')}
+          <label className={`upload-zone ${isTranscribingRecording || recordingJobId ? 'is-disabled' : ''}`} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (!isTranscribingRecording && !recordingJobId && !editingMinutes && event.dataTransfer.files.length) handleFileSelection({ target: { files: event.dataTransfer.files } }) }}><Icon name="upload" size={28} /><strong>Drop audio or video here</strong><span>or choose a file from your device</span><input aria-label="Choose recording file" type="file" disabled={isTranscribingRecording || Boolean(recordingJobId) || editingMinutes} accept="audio/*,video/*,.webm,.mkv" onChange={handleFileSelection} /></label>
+          {recordingProgress && <p role="status">{recordingProgress}</p>}
           {selectedFile && <p>Selected file: {selectedFile.name}</p>}
           <button
             onClick={transcribeRecording}
-            disabled={!selectedFile || isTranscribingRecording}
+            disabled={(!selectedFile && !recordingJobId) || isTranscribingRecording || editingMinutes}
           >
-            Transcribe Recording
+            {isTranscribingRecording ? 'Processing…' : recordingJobId ? 'Resume checking progress' : 'Transcribe Recording'}
           </button>
           {isTranscribingRecording && <p className="transcribing">Transcribing...</p>}
           {recordedTranscript && (
             <>
               <h2>Transcript</h2>
-              <p>{recordedTranscript}</p>
+              {renderTranscript('recorded', recordedSpeakerTurns, recordedTranscript)}
               <button
                 onClick={() => generateMinutes('recorded', recordedTranscript)}
                 disabled={isGeneratingMinutes}
@@ -1180,26 +1483,26 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
             </>
           )}
           {isGeneratingMinutes && <p className="transcribing">Generating Minutes...</p>}
-          {renderMinutes(recordedMinutes)}
+          {renderMinutes(recordedMinutes, 'recorded')}
         </div>
       ) : (
-        <div className="transcript-section assistant-workspace">
-          <header className="assistant-header"><AssistantMascot size={58} /><div><p className="eyebrow">YOUR MEETING COPILOT</p><h2>Ask MOA</h2><span>Find decisions, action items, and context across your saved meetings.</span></div></header>
+        <div className={`transcript-section assistant-workspace ${assistantMessages.some(message => !message.isGreeting) ? 'has-conversation' : 'is-empty'}`}>
+          <header className="assistant-header"><AssistantMascot size={58} /><div><p className="eyebrow">YOUR MEETING COPILOT</p><h2>{workspace ? `Ask ${workspace.name} MOA` : 'Ask MOA'}</h2><span>Find decisions, action items, and context across {workspace ? 'this company’s' : 'your personal'} saved meetings.</span></div></header>
           <section className="assistant-chat-panel">
           <div className="assistant-conversation" aria-live="polite">
-            {assistantMessages.map((chatMessage) => (
-              chatMessage.isGreeting ? (
+            {assistantMessages.map((chatMessage, messageIndex) => (
+              chatMessage.isGreeting ? (assistantMessages.some(message => !message.isGreeting) ? null : (
                 <div key={chatMessage.id} className="assistant-welcome">
-                  <span className="assistant-welcome-avatar"><AssistantMascot size={68} /></span>
-                  <h3>Ask MOA about your meetings</h3>
+                  <span className="assistant-welcome-avatar"><AssistantMascot size={144} /></span>
+                  <h3>What do you want to know?</h3>
                   <p>Find decisions, action items, deadlines and context across your saved conversations.</p>
                   <div className="assistant-suggestions" aria-label="Example questions">
-                    {['What decisions were made?', 'Who owns the action items?', 'What deadlines were mentioned?'].map((suggestion) => <button key={suggestion} onClick={() => setAssistantInput(suggestion)}>{suggestion}<Icon name="chevron" size={14} /></button>)}
+                    {['What decisions were made?', 'Who owns the action items?', 'What deadlines were mentioned?', 'Summarize my latest meeting.'].map((suggestion) => <button key={suggestion} onClick={() => setAssistantInput(suggestion)}>{suggestion}<Icon name="chevron" size={14} /></button>)}
                   </div>
                 </div>
-              ) : (
+              )) : (
                 <div key={chatMessage.id} className={`assistant-message ${chatMessage.role}${chatMessage.isError ? ' assistant-error' : ''}`}>
-                  {chatMessage.role === 'assistant' && <span className="assistant-message-avatar"><AssistantMascot size={32} /></span>}
+                  {chatMessage.role === 'assistant' && <span className="assistant-message-avatar"><AssistantMascot size={32} state={!isAssistantThinking && messageIndex === assistantMessages.length - 1 ? 'responding' : 'idle'} /></span>}
                   <div className="assistant-message-content">
                     <strong className="assistant-message-author">{chatMessage.role === 'user' ? 'You' : 'MOA'}</strong>
                     <p>{chatMessage.content}</p>
@@ -1208,14 +1511,15 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
                 </div>
               )
             ))}
-            {isAssistantThinking && <div className="assistant-thinking"><span className="assistant-message-avatar"><AssistantMascot size={30} /></span><p>MOA is thinking<span aria-hidden="true">...</span></p><i /><i /><i /></div>}
+            {isAssistantThinking && <div className="assistant-thinking"><span className="assistant-message-avatar"><AssistantMascot size={36} state="thinking" /></span><p>MOA is thinking<span aria-hidden="true">...</span></p><i /><i /><i /></div>}
           </div>
           <div className="assistant-composer">
             <textarea
               value={assistantInput}
               onChange={(event) => setAssistantInput(event.target.value)}
               onKeyDown={handleAssistantKeyDown}
-              placeholder="Ask about your indexed meetings..."
+              aria-label="Ask MOA a question"
+              placeholder="Ask anything about your meetings..."
               rows="2"
               disabled={isAssistantThinking}
             />
@@ -1230,6 +1534,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
 
       {isNewMeetingOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsNewMeetingOpen(false)}><section className="new-meeting-modal" role="dialog" aria-modal="true" aria-labelledby="new-meeting-title" onMouseDown={(event) => event.stopPropagation()}><header><div><p className="section-label">CREATE A MEETING</p><h2 id="new-meeting-title">New Meeting</h2></div><button className="icon-button" onClick={() => setIsNewMeetingOpen(false)} aria-label="Close new meeting selector">×</button></header><button className="meeting-mode-option" onClick={() => openNewMeeting('live')}><Icon name="mic" /><span><strong>Live Meeting</strong><small>Start an in-person meeting and transcribe it as it happens.</small></span><Icon name="chevron" /></button><button className="meeting-mode-option" onClick={() => openNewMeeting('recorded')}><Icon name="upload" /><span><strong>Recorded Meeting</strong><small>Upload an existing audio or video recording.</small></span><Icon name="chevron" /></button><button className="meeting-mode-option" onClick={() => openNewMeeting('online')}><Icon name="video" /><span><strong>Online Meeting</strong><small>Capture audio from a browser-based meeting.</small></span><Icon name="chevron" /></button></section></div>}
 
+      {notice && <p role="status">{notice}{notice.includes('Open the saved meeting') && selectedMeeting && <button onClick={() => selectMeeting(selectedMeeting.id)}>Open saved meeting</button>}</p>}
       {mode === 'history' && <div className="transcript-section history-section">
         <h2>Meeting History</h2>
         {isLoadingMeetings ? (
@@ -1270,7 +1575,7 @@ function MainApplication({ session, onSignOut, authError, theme, setTheme }) {
   )
 }
 
-function AuthScreen({ initialError = '' }) {
+export function AuthScreen({ initialError = '' }) {
   const [isCreatingAccount, setIsCreatingAccount] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -1298,6 +1603,7 @@ function AuthScreen({ initialError = '' }) {
 
     try {
       if (isCreatingAccount) {
+        writeOnboarding(readOnboarding(trimmedEmail) || 'choose', trimmedEmail)
         const { data, error: signUpError } = await supabase.auth.signUp({
           email: trimmedEmail,
           password,
@@ -1331,6 +1637,7 @@ function AuthScreen({ initialError = '' }) {
     setAuthMessage('')
 
     try {
+      if (isCreatingAccount && !readOnboarding()) writeOnboarding('choose')
       const { error: oauthError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: { redirectTo: window.location.origin },
@@ -1350,32 +1657,16 @@ function AuthScreen({ initialError = '' }) {
 
   return (
     <div className="auth-shell">
-      <section className="auth-brand-panel">
-        <div className="auth-brand"><strong>MOA</strong><span>Minutes Operational Assistant</span></div>
-        <div><p className="eyebrow">MEET WITH CLARITY</p><h1>Meetings shouldn&apos;t disappear when the conversation ends.</h1><p>Capture conversations, organize decisions, and turn your meetings into searchable knowledge.</p></div>
-        <small>Capture <span>•</span> Organize <span>•</span> Ask <span>•</span> Remember</small>
+      <section className="auth-brand-panel"><DuneMotif />
+        <div className="auth-brand"><MoaMark size={36}/><div><strong>MOA</strong><span>Minutes Operational Assistant</span></div></div>
+        <div className="auth-story"><p className="eyebrow">MEET WITH CLARITY</p><h1>Meetings shouldn’t disappear when the conversation ends.</h1><p>Capture conversations, organize decisions, and turn every meeting into shared knowledge.</p></div>
+        <div className="auth-brand-note"><MoaCompanion size={110} /><p>Your meeting memory.<br /><span>A little help remembering the important things.</span></p></div><small>Capture <span>•</span> Organize <span>•</span> Ask <span>•</span> Remember</small>
       </section>
       <section className="auth-form-panel">
       <div className="auth-form-card">
-        <p className="eyebrow">WELCOME TO MOA</p>
-        <h2>{isCreatingAccount ? 'Create your account' : 'Sign in to your workspace'}</h2>
+        <p className="eyebrow">{isCreatingAccount ? 'WELCOME TO MOA' : 'WELCOME BACK'}</p>
+        <h2>{isCreatingAccount ? 'Create your account' : 'Welcome back'}</h2>
         <p className="auth-intro">{isCreatingAccount ? 'Start turning your meetings into organized knowledge.' : 'Continue where your conversations left off.'}</p>
-        <div className="auth-tabs">
-          <button
-            type="button"
-            onClick={() => switchAuthMode(false)}
-            disabled={isSubmitting || !isCreatingAccount}
-          >
-            Sign In
-          </button>
-          <button
-            type="button"
-            onClick={() => switchAuthMode(true)}
-            disabled={isSubmitting || isCreatingAccount}
-          >
-            Create Account
-          </button>
-        </div>
         <form onSubmit={handleEmailAuthentication} className="auth-form">
             <label>
               <span>Email</span>
@@ -1414,6 +1705,8 @@ function AuthScreen({ initialError = '' }) {
         <button className="google-button" type="button" onClick={handleGoogleSignIn} disabled={isSubmitting}>
           Continue with Google
         </button>
+        <p className="auth-switch">{isCreatingAccount ? 'Already have an account?' : "Don't have an account?"} <button disabled={isSubmitting} onClick={() => switchAuthMode(!isCreatingAccount)}>{isCreatingAccount ? 'Sign in' : 'Create one'}</button></p>
+        <div className="team-helper"><p>Using MOA with a team?<br />Create or join a workspace after signing in.</p></div>
         {authMessage && <p className="status">{authMessage}</p>}
         {authError && <p className="error">{authError}</p>}
       </div>
@@ -1475,11 +1768,7 @@ function App() {
 
   const handleSignOut = async () => {
     try {
-      const { error: signOutError } = await supabase.auth.signOut()
-      if (signOutError) {
-        setAuthError('Unable to sign out. Please try again.')
-        return
-      }
+      await signOutAccount(supabase.auth, session?.user.id)
       setSession(null)
     } catch {
       setAuthError('Unable to sign out. Please try again.')
@@ -1498,7 +1787,7 @@ function App() {
     return <AuthScreen initialError={authError} />
   }
 
-  return <MainApplication session={session} onSignOut={handleSignOut} authError={authError} theme={theme} setTheme={setTheme} />
+  return <WorkspaceApplication key={session.user.id} session={session} onSignOut={handleSignOut} authError={authError} theme={theme} setTheme={setTheme} />
 }
 
 export default App

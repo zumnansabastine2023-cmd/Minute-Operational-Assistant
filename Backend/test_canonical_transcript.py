@@ -15,8 +15,8 @@ class CanonicalTranscriptTests(unittest.TestCase):
         with patch.object(main, "load_dotenv"), patch.dict(
             main.os.environ, {"GEMINI_API_KEY": "test-key"}
         ), patch.object(main.genai, "Client") as client:
-            client.return_value.models.generate_content.return_value.text = '{}'
-            main.generate_minutes(main.MinutesRequest(transcript=TRANSCRIPT), current_user=None)
+            client.return_value.models.generate_content.return_value.text = '{"summary":"","key_points":[],"decisions":[],"action_items":[]}'
+            main.generate_minutes(main.MinutesRequest(transcript=TRANSCRIPT), current_user=main.AuthenticatedUser("canonical-test"))
             prompt = client.return_value.models.generate_content.call_args.kwargs["contents"]
         self.assertIn(TRANSCRIPT, prompt)
         self.assertIn("anonymous speaker labels", prompt)
@@ -31,7 +31,7 @@ class CanonicalTranscriptTests(unittest.TestCase):
         self.assertTrue(any(TRANSCRIPT in chunk for chunk in chunks))
 
     def test_saved_meeting_response_preserves_transcript_newlines(self):
-        meeting = SimpleNamespace(id="meeting-id", title="Dashboard", type="live",
+        meeting = SimpleNamespace(id="meeting-id", title="Dashboard", type="live", organization_id=None,
                                   created_at="2026-09-29", transcript=TRANSCRIPT,
                                   summary=None, key_points=None, decisions=None, action_items=None)
         response = main.meeting_response(meeting)

@@ -23,7 +23,8 @@ def normalize_actions(value):
 
 
 def meeting_revision(meeting):
-    fields = {name: getattr(meeting, name) for name in (
+    fields = {name: getattr(meeting, name, None) for name in (
         "title", "transcript", "summary", "key_points", "decisions", "action_items",
     )}
+    fields["transcript_metadata"] = getattr(meeting, "transcript_metadata", None)
     return hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

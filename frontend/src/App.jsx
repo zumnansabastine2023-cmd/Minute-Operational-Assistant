@@ -25,7 +25,8 @@ import { availableWorkspace, canManageWorkspace, meetingBelongsToWorkspace, work
 import OutputTools from './OutputTools'
 import { filterMeetings } from './meetingFilters'
 import { recorderIsActive, releaseCaptureResources } from './captureLifecycle'
-import { parseRecordingJob, pollRecordingJob, storedRecordingJob, storedRecordingMode } from './recordingJobs'
+import { parseRecordingJob, pollRecordingJob, storedRecordingJob, storedRecordingLanguage, storedRecordingMode } from './recordingJobs'
+import { DEFAULT_RECORDED_LANGUAGE, RECORDED_LANGUAGES, recordedLanguage, recordedTranscriptMetadata } from './languageConfig'
 import { companyData } from './companyData'
 import { normalizeMinutes, isMinutesResponse, isMeetingResponse } from './minutesData'
 
@@ -228,6 +229,8 @@ export function MainApplication({ session, onSignOut, authError, theme, setTheme
   const [interimTranscript, setInterimTranscript] = useState('')
   const [selectedFile, setSelectedFile] = useState(null)
   const [recordedTranscript, setRecordedTranscript] = useState('')
+  const [recordedMetadata, setRecordedMetadata] = useState(null)
+  const [recordedLanguageCode, setRecordedLanguageCode] = useState(() => storedRecordingJob(session.user.id, undefined, undefined, workspace?.id) ? storedRecordingLanguage(session.user.id, workspace?.id) : DEFAULT_RECORDED_LANGUAGE)
   const [recordedSpeakerTurns, setRecordedSpeakerTurns] = useState([])
   const [isTranscribingRecording, setIsTranscribingRecording] = useState(() => Boolean(storedRecordingJob(session.user.id, undefined, undefined, workspace?.id)))
   const [recordingJobId, setRecordingJobId] = useState(() => storedRecordingJob(session.user.id, undefined, undefined, workspace?.id))
@@ -369,6 +372,8 @@ export function MainApplication({ session, onSignOut, authError, theme, setTheme
     ).then((data) => {
       if (!data || controller.signal.aborted) return
       setRecordedTranscript(data.transcript)
+      setRecordedLanguageCode(data.metadata?.language?.code || storedRecordingLanguage(session.user.id, workspace?.id))
+      setRecordedMetadata(recordedTranscriptMetadata(data, data.metadata?.language?.code || storedRecordingLanguage(session.user.id, workspace?.id)))
       const completedMode = data.speaker_mode === 'single' ? 'single' : 'multi'
       setSpeakerModes((previous) => ({ ...previous, recorded: completedMode }))
       setRecordedSpeakerTurns(completedMode === 'single' ? [] : appendLiveSpeakerTurns([], data.speaker_segments, data.transcript))
@@ -892,6 +897,7 @@ export function MainApplication({ session, onSignOut, authError, theme, setTheme
       const formData = new FormData()
       formData.append('file', selectedFile, selectedFile.name)
       formData.append('speaker_mode', speakerModes.recorded)
+      formData.append('language', recordedLanguageCode)
 
       const response = await authenticatedFetch(RECORDED_TRANSCRIPTION_URL, {
         method: 'POST',
@@ -912,7 +918,7 @@ export function MainApplication({ session, onSignOut, authError, theme, setTheme
 
       const job = parseRecordingJob(await response.json())
       if (!accountActiveRef.current) return
-      storedRecordingJob(session.user.id, job.id, speakerModes.recorded, workspace?.id)
+      storedRecordingJob(session.user.id, job.id, speakerModes.recorded, workspace?.id, recordedLanguageCode)
       setRecordingJobId(job.id)
       setRecordingProgress(job.status)
     } catch (uploadError) {
@@ -989,6 +995,7 @@ export function MainApplication({ session, onSignOut, authError, theme, setTheme
           title: title.trim(),
           type: meetingType,
           transcript: cleanedTranscript,
+          ...(meetingType === 'recorded' && recordedMetadata ? { transcript_metadata: recordedMetadata } : {}),
           minutes,
         }),
       })
@@ -1454,12 +1461,22 @@ export function MainApplication({ session, onSignOut, authError, theme, setTheme
         <div className="recorded-workspace">
           <header className="dashboard-heading"><p className="eyebrow">RECORDING TO KNOWLEDGE</p><h2>Upload a conversation</h2><p>Bring your audio or video. MOA will help you find the important details.</p></header>
           {renderSpeakerMode('recorded')}
+          <label className="recorded-language-selector">Recording language
+            <select aria-label="Recording language" value={recordedLanguageCode}
+              disabled={isTranscribingRecording || Boolean(recordingJobId) || editingMinutes || Boolean(recordedTranscript)}
+              onChange={event => setRecordedLanguageCode(event.target.value)}>
+              {RECORDED_LANGUAGES.map(language => <option key={language.code} value={language.code}>{language.label}{language.experimental ? ' — Experimental' : ''}</option>)}
+            </select>
+            <small>{recordedLanguage(recordedLanguageCode).available
+              ? 'English uses MOA’s existing transcription path.'
+              : `${recordedLanguage(recordedLanguageCode).label} transcription is experimental and is not available until a speech engine is connected and tested.`}</small>
+          </label>
           <label className={`upload-zone ${isTranscribingRecording || recordingJobId ? 'is-disabled' : ''}`} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (!isTranscribingRecording && !recordingJobId && !editingMinutes && event.dataTransfer.files.length) handleFileSelection({ target: { files: event.dataTransfer.files } }) }}><Icon name="upload" size={28} /><strong>Drop audio or video here</strong><span>or choose a file from your device</span><input aria-label="Choose recording file" type="file" disabled={isTranscribingRecording || Boolean(recordingJobId) || editingMinutes} accept="audio/*,video/*,.webm,.mkv" onChange={handleFileSelection} /></label>
           {recordingProgress && <p role="status">{recordingProgress}</p>}
           {selectedFile && <p>Selected file: {selectedFile.name}</p>}
           <button
             onClick={transcribeRecording}
-            disabled={(!selectedFile && !recordingJobId) || isTranscribingRecording || editingMinutes}
+            disabled={(!selectedFile && !recordingJobId) || isTranscribingRecording || editingMinutes || !recordedLanguage(recordedLanguageCode).available}
           >
             {isTranscribingRecording ? 'Processing…' : recordingJobId ? 'Resume checking progress' : 'Transcribe Recording'}
           </button>

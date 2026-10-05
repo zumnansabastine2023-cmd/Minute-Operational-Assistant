@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { pollRecordingJob, parseRecordingJob, storedRecordingJob, storedRecordingMode } from './recordingJobs.js'
+import { pollRecordingJob, parseRecordingJob, storedRecordingJob, storedRecordingLanguage, storedRecordingMode } from './recordingJobs.js'
 const id = '00000000-0000-0000-0000-000000000001'
 test('poll queued processing and completed without inventing percentages', async () => {
   const states = ['Queued', 'Processing', 'Completed']
@@ -28,9 +28,10 @@ test('resuming a job restores its speaker mode only for its own account and clea
     removeItem: key => values.delete(key),
   }
   try {
-    storedRecordingJob('one', id, 'single')
+    storedRecordingJob('one', id, 'single', undefined, 'en')
     assert.equal(storedRecordingJob('one'), id)
     assert.equal(storedRecordingMode('one'), 'single')
+    assert.equal(storedRecordingLanguage('one'), 'en')
     assert.equal(storedRecordingMode('two'), 'multi')
     assert.equal(storedRecordingJob('two'), null)
     storedRecordingJob('one', null)

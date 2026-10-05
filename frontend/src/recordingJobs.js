@@ -7,15 +7,22 @@ export function storedRecordingMode(userId, organizationId) {
   catch { return 'multi' }
 }
 
-export function storedRecordingJob(userId, value, speakerMode = 'multi', organizationId) {
+export function storedRecordingLanguage(userId, organizationId) {
+  try { return sessionStorage.getItem(`${recordingKey(userId, organizationId)}:language`) || 'en' }
+  catch { return 'en' }
+}
+
+export function storedRecordingJob(userId, value, speakerMode = 'multi', organizationId, language = 'en') {
   const key = recordingKey(userId, organizationId)
   try {
     if (value === null) {
       sessionStorage.removeItem(key)
       sessionStorage.removeItem(`${key}:speaker-mode`)
+      sessionStorage.removeItem(`${key}:language`)
     } else if (value !== undefined) {
       sessionStorage.setItem(key, value)
       sessionStorage.setItem(`${key}:speaker-mode`, speakerMode === 'single' ? 'single' : 'multi')
+      sessionStorage.setItem(`${key}:language`, language)
     }
     return sessionStorage.getItem(key)
   } catch { return null }

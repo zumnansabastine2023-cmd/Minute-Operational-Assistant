@@ -56,6 +56,7 @@ try:
     from .minutes_data import normalize_actions, meeting_revision
     from .source_attribution import select_supporting_sources
     from .recorded_transcription import RecordedTranscriptionError, transcribe_recording
+    from .language_config import DEFAULT_LANGUAGE, UnsupportedRecordedLanguage, language_options, recorded_language
 except ImportError:  # Supports running `uvicorn main:app` from Backend/.
     from organization_api import organization_router
     from workspaces import Base, Organization, OrganizationMembership, OrganizationInvite, require_organization_member, require_organization_admin
@@ -65,6 +66,7 @@ except ImportError:  # Supports running `uvicorn main:app` from Backend/.
     from minutes_data import normalize_actions, meeting_revision
     from source_attribution import select_supporting_sources
     from recorded_transcription import RecordedTranscriptionError, transcribe_recording
+    from language_config import DEFAULT_LANGUAGE, UnsupportedRecordedLanguage, language_options, recorded_language
 
 ENV_FILE = Path(__file__).with_name(".env")
 load_dotenv(dotenv_path=ENV_FILE)
@@ -186,6 +188,7 @@ class Meeting(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     type: Mapped[str] = mapped_column(String(20), nullable=False)
     transcript: Mapped[str] = mapped_column(Text, nullable=False)
+    transcript_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     key_points: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     decisions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
@@ -253,6 +256,43 @@ class ActionStatusRequest(BaseModel):
     status: Literal["Open", "Completed"]
 
 
+class TranscriptLanguageInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    code: Literal["en", "ha", "yo", "ig", "mixed"]
+    label: str = Field(min_length=1, max_length=80)
+    experimental: bool
+
+
+class TranscriptSegmentInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    text: str = Field(max_length=50000)
+    start: float | None = Field(default=None, ge=0)
+    end: float | None = Field(default=None, ge=0)
+    speaker: str | None = Field(default=None, max_length=80)
+
+
+class TranscriptSourceInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    language: TranscriptLanguageInput
+    provider: str | None = Field(default=None, max_length=80)
+    transcript: str = Field(max_length=2000000)
+    segments: list[TranscriptSegmentInput] = Field(default_factory=list, max_length=100000)
+    speaker_segments: list[TranscriptSegmentInput] = Field(default_factory=list, max_length=100000)
+
+
+class TranscriptTranslationInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    text: str = Field(max_length=2000000)
+    provider: str | None = Field(default=None, max_length=80)
+    segments: list[TranscriptSegmentInput] = Field(default_factory=list, max_length=100000)
+
+
+class TranscriptMetadataInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    source: TranscriptSourceInput
+    translations: dict[str, TranscriptTranslationInput] = Field(default_factory=dict, max_length=10)
+
+
 def validate_assignees(session, actions, user):
     for action in actions:
         assignee = action.assignee_user_id
@@ -280,6 +320,7 @@ class MeetingCreateRequest(BaseModel):
     title: str = Field(max_length=255)
     type: Literal["live", "recorded", "online"]
     transcript: str = Field(max_length=2000000)
+    transcript_metadata: TranscriptMetadataInput | None = None
     minutes: MeetingMinutesInput | None = None
 
 
@@ -687,6 +728,7 @@ def meeting_response(meeting: Meeting) -> dict:
         "title": meeting.title,
         "type": meeting.type,
         "transcript": meeting.transcript,
+        "transcript_metadata": getattr(meeting, "transcript_metadata", None),
         "created_at": meeting.created_at,
         "minutes": minutes,
         "revision": meeting_revision(meeting),
@@ -896,6 +938,7 @@ def create_meeting(request: MeetingCreateRequest, current_user: AuthenticatedUse
         title=title,
         type=request.type,
         transcript=transcript,
+        transcript_metadata=request.transcript_metadata.model_dump() if request.transcript_metadata else None,
         summary=minutes.summary if minutes else None,
         key_points=minutes.key_points if minutes else None,
         decisions=minutes.decisions if minutes else None,
@@ -1443,19 +1486,36 @@ async def store_recording_upload(file: UploadFile):
         await file.close()
 
 
-def process_recording(path, speaker_mode="multi"):
+def process_recording(path, speaker_mode="multi", language=DEFAULT_LANGUAGE):
     with recording_workers:
-        return transcribe_recording(path, model, os.getenv("DEEPGRAM_API_KEY"), deepgram_speaker_segments, speaker_mode=speaker_mode)
+        return transcribe_recording(path, model, os.getenv("DEEPGRAM_API_KEY"), deepgram_speaker_segments,
+                                    speaker_mode=speaker_mode, language=language)
+
+
+@app.get("/transcription-languages")
+def get_transcription_languages(current_user: AuthenticatedUser = Depends(get_workspace_user)):
+    authorize_workspace(current_user)
+    return {"default": DEFAULT_LANGUAGE, "languages": language_options()}
 
 
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...), current_user: AuthenticatedUser = Depends(get_workspace_user),
-                           speaker_mode: Annotated[Literal["single", "multi"], Form()] = "multi"):
+                           speaker_mode: Annotated[Literal["single", "multi"], Form()] = "multi",
+                           language: Annotated[str, Form()] = DEFAULT_LANGUAGE):
     authorize_workspace(current_user, admin=True)
     limiter.check(current_user.id, "recording", 6)
+    try:
+        recorded_language(language)
+    except UnsupportedRecordedLanguage as error:
+        await file.close()
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError:
+        await file.close()
+        raise HTTPException(status_code=422, detail="Unsupported language selection.")
     path = await store_recording_upload(file)
     try:
-        result = await run_in_threadpool(process_recording, path, speaker_mode)
+        process_arguments = (path, speaker_mode) if language == DEFAULT_LANGUAGE else (path, speaker_mode, language)
+        result = await run_in_threadpool(process_recording, *process_arguments)
         authorize_workspace(current_user, admin=True)
         return {"filename": file.filename, **result}
     except RecordedTranscriptionError:
@@ -1465,7 +1525,7 @@ async def transcribe_audio(file: UploadFile = File(...), current_user: Authentic
             os.remove(path)
 
 
-def run_recording_job(job_id, path, speaker_mode="multi"):
+def run_recording_job(job_id, path, speaker_mode="multi", language=DEFAULT_LANGUAGE):
     try:
         with Session(get_database_engine()) as session:
             job = session.get(TranscriptionJob, job_id)
@@ -1474,7 +1534,8 @@ def run_recording_job(job_id, path, speaker_mode="multi"):
             authorize_workspace(AuthenticatedUser(job.owner_id, job.organization_id), admin=True, session=session, lock=True)
             job.status = "Processing"
             session.commit()
-        result = process_recording(path, speaker_mode)
+        result = (process_recording(path, speaker_mode) if language == DEFAULT_LANGUAGE
+                  else process_recording(path, speaker_mode, language))
         result = {**result, "speaker_mode": speaker_mode}
         with Session(get_database_engine()) as session:
             job = session.get(TranscriptionJob, job_id)
@@ -1506,9 +1567,18 @@ def job_response(job):
 @app.post("/transcription-jobs", status_code=202)
 async def create_transcription_job(background_tasks: BackgroundTasks, file: UploadFile = File(...),
                                    current_user: AuthenticatedUser = Depends(get_workspace_user),
-                                   speaker_mode: Annotated[Literal["single", "multi"], Form()] = "multi"):
+                                   speaker_mode: Annotated[Literal["single", "multi"], Form()] = "multi",
+                                   language: Annotated[str, Form()] = DEFAULT_LANGUAGE):
     authorize_workspace(current_user, admin=True)
     limiter.check(current_user.id, "recording-job", 6)
+    try:
+        recorded_language(language)
+    except UnsupportedRecordedLanguage as error:
+        await file.close()
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError:
+        await file.close()
+        raise HTTPException(status_code=422, detail="Unsupported language selection.")
     path = await store_recording_upload(file)
     try:
         now = datetime.now(timezone.utc)
@@ -1534,7 +1604,7 @@ async def create_transcription_job(background_tasks: BackgroundTasks, file: Uplo
             session.commit()
             session.refresh(job)
             response = job_response(job)
-        background_tasks.add_task(run_recording_job, job.id, path, speaker_mode)
+        background_tasks.add_task(run_recording_job, job.id, path, speaker_mode, language)
         return response
     except BaseException as error:
         if os.path.exists(path):

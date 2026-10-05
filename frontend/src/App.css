@@ -247,3 +247,26 @@ button:not(:disabled):active { filter:brightness(.94); }
 }
 
 }
+.recorded-language-selector {
+  display: grid;
+  gap: 6px;
+  max-width: 420px;
+  margin: 14px 0;
+  font-weight: 650;
+}
+
+.recorded-language-selector select {
+  min-height: 42px;
+  border: 1px solid var(--border-color, #cbd5e1);
+  border-radius: 10px;
+  padding: 0 12px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font: inherit;
+}
+
+.recorded-language-selector small {
+  font-weight: 400;
+  color: var(--muted-text, #64748b);
+  line-height: 1.45;
+}

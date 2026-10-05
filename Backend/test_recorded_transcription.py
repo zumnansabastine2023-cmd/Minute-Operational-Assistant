@@ -93,6 +93,17 @@ class RecordedResponseTests(unittest.TestCase):
         self.assertEqual(result["transcript"], "  First.\nSecond.  ")
         self.assertEqual(len(result["speaker_segments"]), 2)
 
+    def test_complete_provider_timestamps_are_preserved_per_speaker_turn(self):
+        words = [
+            {**word("Hello", 4), "start": 1.25, "end": 1.75},
+            {**word("there.", 4), "start": 1.8, "end": 2.2},
+            {**word("Welcome.", 8), "start": 2.4, "end": 3.0},
+        ]
+        self.assertEqual(self.parse("Hello there. Welcome.", words)["speaker_segments"], [
+            {"speaker": "Speaker 1", "text": "Hello there.", "start": 1.25, "end": 2.2},
+            {"speaker": "Speaker 2", "text": "Welcome.", "start": 2.4, "end": 3.0},
+        ])
+
     def test_silence_is_valid_empty_result(self):
         self.assertEqual(self.parse("", []), {"transcript": ""})
 
@@ -117,13 +128,15 @@ class RecordedFallbackTests(unittest.TestCase):
 
     def test_missing_key_uses_whisper_without_provider_request(self):
         with patch.object(recorded, "request_deepgram_transcription") as request:
-            self.assertEqual(self.transcribe(None), {"transcript": "Full local transcript."})
+            result = self.transcribe(None)
+            self.assertEqual(result["transcript"], "Full local transcript.")
+            self.assertEqual(result["metadata"]["language"]["code"], "en")
         request.assert_not_called()
 
     def test_single_mode_uses_plain_whisper_even_with_provider_key(self):
         with patch.object(recorded, "request_deepgram_transcription") as request:
             result = recorded.transcribe_recording("test.wav", self.whisper, "key", main.deepgram_speaker_segments, "single")
-        self.assertEqual(result, {"transcript": "Full local transcript."})
+        self.assertEqual(result["transcript"], "Full local transcript.")
         request.assert_not_called()
         self.whisper.transcribe.assert_called_once_with("test.wav")
 
@@ -135,15 +148,17 @@ class RecordedFallbackTests(unittest.TestCase):
 
     def test_provider_failure_falls_back(self):
         with patch.object(recorded, "request_deepgram_transcription", side_effect=TimeoutError):
-            self.assertEqual(self.transcribe(), {"transcript": "Full local transcript."})
+            self.assertEqual(self.transcribe()["transcript"], "Full local transcript.")
 
     def test_malformed_provider_shape_falls_back(self):
         with patch.object(recorded, "request_deepgram_transcription", return_value={"unexpected": True}):
-            self.assertEqual(self.transcribe(), {"transcript": "Full local transcript."})
+            self.assertEqual(self.transcribe()["transcript"], "Full local transcript.")
 
     def test_missing_metadata_preserves_provider_plain_text_without_whisper(self):
         with patch.object(recorded, "request_deepgram_transcription", return_value=payload("Provider full text.")):
-            self.assertEqual(self.transcribe(), {"transcript": "Provider full text."})
+            result = self.transcribe()
+            self.assertEqual(result["transcript"], "Provider full text.")
+            self.assertEqual(result["metadata"]["provider"], "deepgram")
         self.whisper.transcribe.assert_not_called()
 
     def test_diarization_success_does_not_call_whisper(self):
@@ -226,8 +241,9 @@ class RecordedUploadTests(unittest.IsolatedAsyncioTestCase):
                 handle = create_temp(dir=directory, **kwargs)
                 paths.append(handle.name)
                 return handle
-            def worker(path, *_args, speaker_mode="multi"):
+            def worker(path, *_args, speaker_mode="multi", language="en"):
                 self.assertEqual(speaker_mode, "multi")
+                self.assertEqual(language, "en")
                 worker_threads.append(threading.get_ident())
                 self.assertTrue(os.path.isfile(path))
                 with open(path, "rb") as audio:

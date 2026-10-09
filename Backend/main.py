@@ -1,18 +1,20 @@
 import asyncio
 import json
+import math
 import os
 import re
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
+from threading import BoundedSemaphore
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
@@ -40,14 +42,31 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
+from starlette.concurrency import run_in_threadpool
 from websockets.asyncio.client import connect as connect_to_deepgram
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 try:
+    from .organization_api import organization_router
+    from .workspaces import Base, Organization, OrganizationMembership, OrganizationInvite, require_organization_member, require_organization_admin
+    from .speaker_smoothing import smooth_speaker_words, smoothing_diagnostics
+    from .request_limits import limiter
+    from .weekly_summary import build_summary_context, summary_date_bounds, MAX_SUMMARY_MEETINGS
+    from .minutes_data import normalize_actions, meeting_revision
     from .source_attribution import select_supporting_sources
+    from .recorded_transcription import RecordedTranscriptionError, transcribe_recording
+    from .language_config import DEFAULT_LANGUAGE, UnsupportedRecordedLanguage, language_options, recorded_language
 except ImportError:  # Supports running `uvicorn main:app` from Backend/.
+    from organization_api import organization_router
+    from workspaces import Base, Organization, OrganizationMembership, OrganizationInvite, require_organization_member, require_organization_admin
+    from speaker_smoothing import smooth_speaker_words, smoothing_diagnostics
+    from request_limits import limiter
+    from weekly_summary import build_summary_context, summary_date_bounds, MAX_SUMMARY_MEETINGS
+    from minutes_data import normalize_actions, meeting_revision
     from source_attribution import select_supporting_sources
+    from recorded_transcription import RecordedTranscriptionError, transcribe_recording
+    from language_config import DEFAULT_LANGUAGE, UnsupportedRecordedLanguage, language_options, recorded_language
 
 ENV_FILE = Path(__file__).with_name(".env")
 load_dotenv(dotenv_path=ENV_FILE)
@@ -152,21 +171,24 @@ ASSISTANT_ANSWER_SCHEMA = {
 
 
 class MinutesRequest(BaseModel):
-    transcript: str
+    transcript: str = Field(max_length=500000)
 
 
-class Base(DeclarativeBase):
-    pass
+class WeeklySummaryRequest(BaseModel):
+    start_date: date
+    end_date: date
 
 
 class Meeting(Base):
     __tablename__ = "meetings"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID | None] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True, index=True)
     owner_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     type: Mapped[str] = mapped_column(String(20), nullable=False)
     transcript: Mapped[str] = mapped_column(Text, nullable=False)
+    transcript_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     key_points: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     decisions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
@@ -199,38 +221,132 @@ class MeetingChunk(Base):
 
 
 class ActionItemInput(BaseModel):
-    task: str
-    owner: str
-    deadline: str
+    assignee_user_id: str | None = Field(default=None, min_length=1, max_length=255)
+    task: str = Field(max_length=4000)
+    owner: str = Field(max_length=255)
+    deadline: str = Field(max_length=255)
+    status: Literal["Open", "Completed"] = "Open"
+
+
+class TranscriptionJob(Base):
+    __tablename__ = "transcription_jobs"
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID | None] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True, index=True)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="Queued")
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+recording_workers = BoundedSemaphore(2)
 
 
 class MeetingMinutesInput(BaseModel):
-    summary: str
-    key_points: list[str] = Field(default_factory=list)
-    decisions: list[str] = Field(default_factory=list)
-    action_items: list[ActionItemInput] = Field(default_factory=list)
+    summary: str = Field(max_length=50000)
+    key_points: list[str] = Field(default_factory=list, max_length=200)
+    decisions: list[str] = Field(default_factory=list, max_length=200)
+    action_items: list[ActionItemInput] = Field(default_factory=list, max_length=200)
+
+
+class ActionStatusRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    expected_revision: str = Field(min_length=64, max_length=64)
+    status: Literal["Open", "Completed"]
+
+
+class TranscriptLanguageInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    code: Literal["en", "ha", "yo", "ig", "mixed"]
+    label: str = Field(min_length=1, max_length=80)
+    experimental: bool
+
+
+class TranscriptSegmentInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    text: str = Field(max_length=50000)
+    start: float | None = Field(default=None, ge=0)
+    end: float | None = Field(default=None, ge=0)
+    speaker: str | None = Field(default=None, max_length=80)
+
+
+class TranscriptSourceInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    language: TranscriptLanguageInput
+    provider: str | None = Field(default=None, max_length=80)
+    transcript: str = Field(max_length=2000000)
+    segments: list[TranscriptSegmentInput] = Field(default_factory=list, max_length=100000)
+    speaker_segments: list[TranscriptSegmentInput] = Field(default_factory=list, max_length=100000)
+
+
+class TranscriptTranslationInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    text: str = Field(max_length=2000000)
+    provider: str | None = Field(default=None, max_length=80)
+    segments: list[TranscriptSegmentInput] = Field(default_factory=list, max_length=100000)
+
+
+class TranscriptMetadataInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    source: TranscriptSourceInput
+    translations: dict[str, TranscriptTranslationInput] = Field(default_factory=dict, max_length=10)
+
+
+def validate_assignees(session, actions, user):
+    for action in actions:
+        assignee = action.assignee_user_id
+        if assignee is None:
+            continue
+        if user.organization_id is None:
+            raise HTTPException(400, "Linked assignees are only supported in company workspaces.")
+        member = session.scalar(select(OrganizationMembership).where(
+            OrganizationMembership.organization_id == user.organization_id,
+            OrganizationMembership.user_id == assignee))
+        if member is None:
+            raise HTTPException(400, "Assign actions to an active member of this company.")
+
+
+def authorize_action(meeting, index, user, membership):
+    actions = normalize_actions(meeting.action_items)
+    if index < 0 or index >= len(actions):
+        raise HTTPException(404, "Action item not found.")
+    if membership and membership[1].role != "admin" and actions[index].get("assignee_user_id") != user.id:
+        raise HTTPException(403, "Only the assigned member or a Company Admin can change this action.")
+    return actions
 
 
 class MeetingCreateRequest(BaseModel):
-    title: str
+    title: str = Field(max_length=255)
     type: Literal["live", "recorded", "online"]
-    transcript: str
+    transcript: str = Field(max_length=2000000)
+    transcript_metadata: TranscriptMetadataInput | None = None
     minutes: MeetingMinutesInput | None = None
+
+
+class MeetingUpdateRequest(BaseModel):
+    expected_revision: str = Field(min_length=64, max_length=64)
+    title: str = Field(min_length=1, max_length=255)
+    minutes: MeetingMinutesInput
 
 
 @dataclass(frozen=True)
 class AuthenticatedUser:
     id: str
+    organization_id: UUID | None = None
+    role: str | None = None
+    display_name: str = ""
+    email: str = ""
 
 
 class AssistantHistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: str
+    content: str = Field(max_length=20000)
 
 
 class AssistantChatRequest(BaseModel):
     message: object | None = None
-    history: list[AssistantHistoryMessage] = Field(default_factory=list)
+    history: list[AssistantHistoryMessage] = Field(default_factory=list, max_length=10)
 
 
 class EmbeddingGenerationError(Exception):
@@ -310,8 +426,7 @@ def safe_gemini_error_message(error: Exception, api_key: str) -> str:
 def print_gemini_diagnostic(error: Exception, api_key: str) -> None:
     """Write one immediately visible, credential-safe diagnostic to Uvicorn's stderr."""
     print(
-        f"GEMINI_DIAGNOSTIC: {type(error).__name__}: "
-        f"{safe_gemini_error_message(error, api_key)}",
+        f"GEMINI_DIAGNOSTIC: error_type={type(error).__name__}",
         file=sys.stderr,
         flush=True,
     )
@@ -325,8 +440,7 @@ def print_gemini_stage(stage: str) -> None:
 def print_gemini_failure(category: str, error: Exception, api_key: str) -> None:
     """Log a classified Gemini failure without exposing credentials."""
     print(
-        f"GEMINI_FAILURE: category={category} error_type={type(error).__name__} "
-        f"detail={safe_gemini_error_message(error, api_key)}",
+        f"GEMINI_FAILURE: category={category} error_type={type(error).__name__}",
         file=sys.stderr,
         flush=True,
     )
@@ -400,7 +514,9 @@ def verify_supabase_access_token(token: str) -> AuthenticatedUser:
     subject = claims.get("sub")
     if not isinstance(subject, str) or not subject:
         raise unauthorized()
-    return AuthenticatedUser(id=subject)
+    metadata = claims.get("user_metadata")
+    display_name = metadata.get("full_name") if isinstance(metadata, dict) else None
+    return AuthenticatedUser(id=subject, display_name=str(display_name or claims.get("email") or "Member")[:255], email=str(claims.get("email") or "")[:255])
 
 
 def get_current_user(
@@ -409,6 +525,50 @@ def get_current_user(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise unauthorized()
     return verify_supabase_access_token(credentials.credentials)
+
+
+def authorize_workspace(user, *, admin=False, session=None, lock=False):
+    """Recheck database membership, never a client-supplied role."""
+    if user.organization_id is None:
+        return
+    try:
+        if session is not None:
+            return require_organization_member(session, user.organization_id, user.id, admin=admin, lock=lock)
+        with Session(get_database_engine()) as database:
+            return require_organization_member(database, user.organization_id, user.id, admin=admin)
+    except SQLAlchemyError as error:
+        raise HTTPException(503, "Unable to check company access. Please retry.") from error
+
+
+def get_workspace_user(current_user: AuthenticatedUser = Depends(get_current_user), organization_id: UUID | None = None):
+    user = AuthenticatedUser(current_user.id, organization_id, display_name=current_user.display_name, email=current_user.email)
+    membership = authorize_workspace(user)
+    return AuthenticatedUser(user.id, organization_id, membership[1].role if membership else None, user.display_name, user.email)
+
+
+def scope_predicate(model, owner_id, organization_id=None):
+    if organization_id is None:
+        return (model.owner_id == owner_id) & model.organization_id.is_(None)
+    return model.organization_id == organization_id
+
+
+def meeting_in_scope(meeting, user):
+    organization_id = getattr(meeting, "organization_id", None)
+    return (organization_id == user.organization_id and
+            (organization_id is not None or meeting.owner_id == user.id))
+
+
+def scoped_index(meeting_id, user):
+    if user.organization_id is None:
+        return index_meeting_chunks(meeting_id, user.id)
+    return index_meeting_chunks(meeting_id, user.id, user.organization_id)
+
+
+def scoped_retrieval(embedding, limit, user):
+    rows = (retrieve_semantic_chunks(embedding, limit, user.id) if user.organization_id is None
+            else retrieve_semantic_chunks(embedding, limit, user.id, user.organization_id))
+    # Defense in depth before any text enters model context or source responses.
+    return [row for row in rows if meeting_in_scope(row[1], user)]
 
 
 def get_websocket_user(websocket: WebSocket) -> AuthenticatedUser:
@@ -434,7 +594,7 @@ def generate_embedding(text_to_embed: str) -> list[float]:
         raise HTTPException(status_code=500, detail="Gemini is not configured on the server.")
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=60000, retry_options=MINUTES_GEMINI_RETRY_OPTIONS))
         response = client.models.embed_content(
             model=EMBEDDING_MODEL,
             contents=[content],
@@ -519,7 +679,7 @@ CURRENT USER QUESTION:
 """
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=60000, retry_options=MINUTES_GEMINI_RETRY_OPTIONS))
         response = client.models.generate_content(
             model="gemini-3.5-flash-lite",
             contents=prompt,
@@ -560,7 +720,7 @@ def meeting_response(meeting: Meeting) -> dict:
             "summary": meeting.summary or "",
             "key_points": meeting.key_points or [],
             "decisions": meeting.decisions or [],
-            "action_items": meeting.action_items or [],
+            "action_items": normalize_actions(meeting.action_items),
         }
 
     return {
@@ -568,8 +728,11 @@ def meeting_response(meeting: Meeting) -> dict:
         "title": meeting.title,
         "type": meeting.type,
         "transcript": meeting.transcript,
+        "transcript_metadata": getattr(meeting, "transcript_metadata", None),
         "created_at": meeting.created_at,
         "minutes": minutes,
+        "revision": meeting_revision(meeting),
+        "organization_id": str(meeting.organization_id) if meeting.organization_id else None,
     }
 
 
@@ -666,40 +829,45 @@ def get_database_engine() -> Engine:
     return database_engine
 
 
-def retrieve_semantic_chunks(
-    query_embedding: list[float],
-    limit: int,
-    owner_id: str,
-) -> list[tuple[MeetingChunk, Meeting, float]]:
-    """Use PostgreSQL pgvector to retrieve the nearest indexed meeting chunks."""
+def semantic_chunk_statement(query_embedding, limit, owner_id, organization_id=None):
+    """Scope in SQL before ranking/limiting, through the parent meeting."""
     cosine_distance = MeetingChunk.embedding.cosine_distance(query_embedding).label(
         "cosine_distance"
     )
-    statement = (
+    return (
         select(MeetingChunk, Meeting, cosine_distance)
         .join(Meeting, Meeting.id == MeetingChunk.meeting_id)
-        .where(MeetingChunk.embedding.is_not(None), Meeting.owner_id == owner_id)
+        .where(MeetingChunk.embedding.is_not(None), scope_predicate(Meeting, owner_id, organization_id))
         .order_by(cosine_distance)
         .limit(limit)
     )
 
+
+def retrieve_semantic_chunks(query_embedding, limit, owner_id, organization_id=None):
+    """Use PostgreSQL pgvector to retrieve only authorized workspace chunks."""
+    statement = semantic_chunk_statement(query_embedding, limit, owner_id, organization_id)
     try:
         with Session(get_database_engine()) as session:
+            authorize_workspace(AuthenticatedUser(owner_id, organization_id), session=session)
             return session.execute(statement).all()
     except SQLAlchemyError as error:
         raise SemanticRetrievalError("Database vector retrieval failed.") from error
 
 
-def index_meeting_chunks(meeting_id: UUID, owner_id: str) -> int:
+def index_meeting_chunks(meeting_id: UUID, owner_id: str, organization_id: UUID | None = None, *, action_index: int | None = None) -> int:
     """Generate and atomically replace one meeting's stored chunk embeddings."""
     engine = get_database_engine()
+    indexing_user = AuthenticatedUser(owner_id, organization_id)
     try:
         with Session(engine) as session:
+            membership = authorize_workspace(indexing_user, admin=action_index is None, session=session)
             meeting = session.scalar(
-                select(Meeting).where(Meeting.id == meeting_id, Meeting.owner_id == owner_id)
+                select(Meeting).where(Meeting.id == meeting_id, scope_predicate(Meeting, owner_id, organization_id))
             )
             if meeting is None:
                 raise HTTPException(status_code=404, detail="Meeting not found.")
+            if action_index is not None:
+                authorize_action(meeting, action_index, indexing_user, membership)
             chunks = meeting_to_chunks(meeting)
     except SQLAlchemyError as error:
         raise MeetingIndexingError("Unable to read the meeting for indexing.") from error
@@ -712,11 +880,17 @@ def index_meeting_chunks(meeting_id: UUID, owner_id: str) -> int:
     try:
         with Session(engine) as session:
             with session.begin():
+                membership = authorize_workspace(indexing_user, admin=action_index is None, session=session, lock=True)
                 # Check again inside the write transaction in case it was deleted meanwhile.
-                if session.scalar(
-                    select(Meeting).where(Meeting.id == meeting_id, Meeting.owner_id == owner_id)
-                ) is None:
+                current = session.scalar(
+                    select(Meeting).where(Meeting.id == meeting_id, scope_predicate(Meeting, owner_id, organization_id)).with_for_update()
+                )
+                if current is None:
                     raise HTTPException(status_code=404, detail="Meeting not found.")
+                if action_index is not None:
+                    authorize_action(current, action_index, indexing_user, membership)
+                if meeting_to_chunks(current) != chunks:
+                    raise HTTPException(status_code=409, detail="Meeting changed during indexing. Please retry.")
                 session.execute(delete(MeetingChunk).where(MeetingChunk.meeting_id == meeting_id))
                 session.add_all(
                     [
@@ -748,7 +922,8 @@ def database_health():
 
 
 @app.post("/meetings", status_code=201)
-def create_meeting(request: MeetingCreateRequest, current_user: AuthenticatedUser = Depends(get_current_user)):
+def create_meeting(request: MeetingCreateRequest, current_user: AuthenticatedUser = Depends(get_workspace_user)):
+    authorize_workspace(current_user, admin=True)
     title = request.title.strip()
     transcript = request.transcript.strip()
     if not title:
@@ -759,9 +934,11 @@ def create_meeting(request: MeetingCreateRequest, current_user: AuthenticatedUse
     minutes = request.minutes
     meeting = Meeting(
         owner_id=current_user.id,
+        organization_id=current_user.organization_id,
         title=title,
         type=request.type,
         transcript=transcript,
+        transcript_metadata=request.transcript_metadata.model_dump() if request.transcript_metadata else None,
         summary=minutes.summary if minutes else None,
         key_points=minutes.key_points if minutes else None,
         decisions=minutes.decisions if minutes else None,
@@ -770,6 +947,8 @@ def create_meeting(request: MeetingCreateRequest, current_user: AuthenticatedUse
 
     try:
         with Session(get_database_engine()) as session:
+            authorize_workspace(current_user, admin=True, session=session, lock=True)
+            validate_assignees(session, minutes.action_items if minutes else [], current_user)
             session.add(meeting)
             session.commit()
             session.refresh(meeting)
@@ -778,7 +957,7 @@ def create_meeting(request: MeetingCreateRequest, current_user: AuthenticatedUse
         raise HTTPException(status_code=503, detail="Database operation failed.")
 
     try:
-        chunk_count = index_meeting_chunks(meeting.id, current_user.id)
+        chunk_count = scoped_index(meeting.id, current_user)
         response["indexed"] = True
         print_auto_index_diagnostic(meeting.id, chunk_count=chunk_count)
     except Exception as auto_index_error:
@@ -790,12 +969,13 @@ def create_meeting(request: MeetingCreateRequest, current_user: AuthenticatedUse
 
 
 @app.get("/meetings")
-def list_meetings(current_user: AuthenticatedUser = Depends(get_current_user)):
+def list_meetings(current_user: AuthenticatedUser = Depends(get_workspace_user)):
     try:
         with Session(get_database_engine()) as session:
+            authorize_workspace(current_user, session=session)
             meetings = session.scalars(
                 select(Meeting)
-                .where(Meeting.owner_id == current_user.id)
+                .where(scope_predicate(Meeting, current_user.id, current_user.organization_id))
                 .order_by(Meeting.created_at.desc())
             ).all()
             return [meeting_response(meeting) for meeting in meetings]
@@ -806,7 +986,7 @@ def list_meetings(current_user: AuthenticatedUser = Depends(get_current_user)):
 @app.get("/meetings/search")
 def search_meetings(
     q: str | None = Query(default=None),
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(get_workspace_user),
 ):
     query = q.strip() if q else ""
     if not query:
@@ -826,9 +1006,10 @@ def search_meetings(
 
     try:
         with Session(get_database_engine()) as session:
+            authorize_workspace(current_user, session=session)
             meetings = session.scalars(
                 select(Meeting)
-                .where(Meeting.owner_id == current_user.id, or_(*conditions))
+                .where(scope_predicate(Meeting, current_user.id, current_user.organization_id), or_(*conditions))
                 .order_by(Meeting.created_at.desc())
                 .limit(20)
             ).all()
@@ -848,6 +1029,7 @@ def search_meetings(
             "title": meeting.title,
             "type": meeting.type,
             "created_at": meeting.created_at,
+            "organization_id": str(meeting.organization_id) if meeting.organization_id else None,
             "matched_content": search_excerpt(meeting, query),
             "minutes": meeting_response(meeting)["minutes"],
         }
@@ -856,16 +1038,59 @@ def search_meetings(
     return {"query": query, "count": len(results), "results": results}
 
 
+@app.post("/summaries/weekly")
+def weekly_summary(request: WeeklySummaryRequest, current_user: AuthenticatedUser = Depends(get_workspace_user)):
+    limiter.check(current_user.id, "weekly-summary", 6)
+    try:
+        start, end = summary_date_bounds(request.start_date, request.end_date)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    try:
+        with Session(get_database_engine()) as session:
+            authorize_workspace(current_user, session=session)
+            meetings = session.scalars(select(Meeting).where(
+                scope_predicate(Meeting, current_user.id, current_user.organization_id), Meeting.created_at >= start, Meeting.created_at < end,
+            ).order_by(Meeting.created_at.desc(), Meeting.id).limit(MAX_SUMMARY_MEETINGS + 1)).all()
+            context, source_map, limited = build_summary_context(meetings, meeting_to_chunks)
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="Unable to load meetings for this summary.")
+    base = {"start_date": request.start_date, "end_date": request.end_date,
+            "timezone": "UTC", "limited": limited, "meetings_considered": len(source_map)}
+    if not source_map:
+        return {**base, "answer": "No meetings were saved in this date range.", "sources": []}
+    question = (
+        f"Summarize the stored meetings from {request.start_date} through {request.end_date} (UTC). "
+        "Use sections: Overview, Key decisions, Open action items, Completed action items, "
+        "Repeated topics, Risks/blockers, Upcoming deadlines. State when a section has no evidence. "
+        "A task is completed only if its stored status explicitly says Completed. "
+        "Do not infer completion from a past deadline. Preserve owners and anonymous speaker labels. "
+        "Some records may be excerpts, so never claim exhaustive coverage. "
+        "Return source IDs only for records supporting the summary."
+    )
+    try:
+        answer, source_ids = generate_assistant_answer(question, context, [])
+        sources = select_supporting_sources(source_map, source_ids)
+        if not sources:
+            answer = "The available meeting records did not support a grounded summary."
+        authorize_workspace(current_user)
+        return {**base, "answer": answer, "sources": sources}
+    except AssistantAnswerGenerationError:
+        raise HTTPException(status_code=503, detail=MINUTES_GEMINI_BUSY_MESSAGE)
+
+
 @app.post("/assistant/chat")
 def chat_with_assistant(
     request: AssistantChatRequest,
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(get_workspace_user),
 ):
+    limiter.check(current_user.id, "assistant", 20)
     if not isinstance(request.message, str):
         raise HTTPException(status_code=400, detail="A non-empty message is required.")
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="A non-empty message is required.")
+    if len(message) > 8000:
+        raise HTTPException(status_code=400, detail="Please keep your question under 8,000 characters.")
 
     recent_history = request.history[-ASSISTANT_HISTORY_LIMIT:]
     try:
@@ -874,9 +1099,7 @@ def chat_with_assistant(
         raise HTTPException(status_code=502, detail="Unable to generate a search embedding.")
 
     try:
-        rows = retrieve_semantic_chunks(
-            query_embedding, ASSISTANT_RETRIEVAL_LIMIT, current_user.id
-        )
+        rows = scoped_retrieval(query_embedding, ASSISTANT_RETRIEVAL_LIMIT, current_user)
     except SemanticRetrievalError:
         raise HTTPException(status_code=503, detail="Assistant retrieval is unavailable.")
 
@@ -924,6 +1147,7 @@ def chat_with_assistant(
         raise HTTPException(status_code=502, detail="Unable to generate an assistant answer.")
 
     sources = select_supporting_sources(retrieved_sources, supporting_source_ids)
+    authorize_workspace(current_user)
     return {"answer": answer, "sources": sources}
 
 
@@ -931,7 +1155,7 @@ def chat_with_assistant(
 def semantic_search_meetings(
     q: str = Query(...),
     limit: int = Query(default=5, ge=1, le=10),
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(get_workspace_user),
 ):
     query = q.strip()
     if not query:
@@ -943,7 +1167,7 @@ def semantic_search_meetings(
         raise HTTPException(status_code=502, detail="Unable to generate a search embedding.")
 
     try:
-        rows = retrieve_semantic_chunks(query_embedding, limit, current_user.id)
+        rows = scoped_retrieval(query_embedding, limit, current_user)
     except SemanticRetrievalError:
         raise HTTPException(status_code=503, detail="Semantic search is unavailable.")
 
@@ -966,10 +1190,11 @@ def semantic_search_meetings(
 @app.post("/meetings/{meeting_id}/index")
 def index_meeting(
     meeting_id: UUID,
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(get_workspace_user),
 ):
+    authorize_workspace(current_user, admin=True)
     try:
-        chunk_count = index_meeting_chunks(meeting_id, current_user.id)
+        chunk_count = scoped_index(meeting_id, current_user)
     except EmbeddingGenerationError:
         raise HTTPException(status_code=502, detail="Unable to generate meeting embeddings.")
     except MeetingIndexingError:
@@ -986,13 +1211,14 @@ def index_meeting(
 @app.get("/meetings/{meeting_id}/index-status")
 def meeting_index_status(
     meeting_id: UUID,
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(get_workspace_user),
 ):
     engine = get_database_engine()
     try:
         with Session(engine) as session:
+            authorize_workspace(current_user, session=session)
             if session.scalar(
-                select(Meeting).where(Meeting.id == meeting_id, Meeting.owner_id == current_user.id)
+                select(Meeting).where(Meeting.id == meeting_id, scope_predicate(Meeting, current_user.id, current_user.organization_id))
             ) is None:
                 raise HTTPException(status_code=404, detail="Meeting not found.")
             chunk_count = session.scalar(
@@ -1013,12 +1239,13 @@ def meeting_index_status(
 @app.get("/meetings/{meeting_id}")
 def get_meeting(
     meeting_id: UUID,
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(get_workspace_user),
 ):
     try:
         with Session(get_database_engine()) as session:
+            authorize_workspace(current_user, session=session)
             meeting = session.scalar(
-                select(Meeting).where(Meeting.id == meeting_id, Meeting.owner_id == current_user.id)
+                select(Meeting).where(Meeting.id == meeting_id, scope_predicate(Meeting, current_user.id, current_user.organization_id))
             )
             if meeting is None:
                 raise HTTPException(status_code=404, detail="Meeting not found.")
@@ -1027,15 +1254,81 @@ def get_meeting(
         raise HTTPException(status_code=503, detail="Database operation failed.")
 
 
+@app.patch("/meetings/{meeting_id}")
+def update_meeting(meeting_id: UUID, request: MeetingUpdateRequest,
+                   current_user: AuthenticatedUser = Depends(get_workspace_user)):
+    authorize_workspace(current_user, admin=True)
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="Meeting title cannot be empty.")
+    try:
+        with Session(get_database_engine()) as session:
+            with session.begin():
+                authorize_workspace(current_user, admin=True, session=session, lock=True)
+                meeting = session.scalar(select(Meeting).where(
+                    Meeting.id == meeting_id, scope_predicate(Meeting, current_user.id, current_user.organization_id),
+                ).with_for_update())
+                if meeting is None:
+                    raise HTTPException(status_code=404, detail="Meeting not found.")
+                if meeting_revision(meeting) != request.expected_revision:
+                    raise HTTPException(status_code=409, detail="This meeting changed elsewhere. Reopen it before applying your edits.")
+                validate_assignees(session, request.minutes.action_items, current_user)
+                meeting.title = request.title.strip()
+                for name in ("summary", "key_points", "decisions"):
+                    setattr(meeting, name, getattr(request.minutes, name))
+                meeting.action_items = [item.model_dump() for item in request.minutes.action_items]
+                session.execute(delete(MeetingChunk).where(MeetingChunk.meeting_id == meeting_id))
+                response = meeting_response(meeting)
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="Unable to save meeting changes.")
+    try:
+        scoped_index(meeting_id, current_user)
+        response["indexed"] = True
+    except Exception as error:
+        response["indexed"] = False
+        print_auto_index_diagnostic(meeting_id, error=error)
+    return response
+
+
+@app.patch("/meetings/{meeting_id}/actions/{action_index}")
+def update_action_status(meeting_id: UUID, action_index: int, request: ActionStatusRequest,
+                         current_user: AuthenticatedUser = Depends(get_workspace_user)):
+    try:
+        with Session(get_database_engine()) as session:
+            with session.begin():
+                membership = authorize_workspace(current_user, session=session, lock=True)
+                meeting = session.scalar(select(Meeting).where(Meeting.id == meeting_id,
+                    scope_predicate(Meeting, current_user.id, current_user.organization_id)).with_for_update())
+                if meeting is None:
+                    raise HTTPException(404, "Meeting not found.")
+                if meeting_revision(meeting) != request.expected_revision:
+                    raise HTTPException(409, "This meeting changed. Reopen it before updating the action.")
+                actions = authorize_action(meeting, action_index, current_user, membership)
+                actions[action_index]["status"] = request.status
+                meeting.action_items = actions
+                session.execute(delete(MeetingChunk).where(MeetingChunk.meeting_id == meeting_id))
+                response = meeting_response(meeting)
+    except SQLAlchemyError:
+        raise HTTPException(503, "Unable to update this action.")
+    try:
+        index_meeting_chunks(meeting_id, current_user.id, current_user.organization_id, action_index=action_index)
+        response["indexed"] = True
+    except Exception as error:
+        response["indexed"] = False
+        print_auto_index_diagnostic(meeting_id, error=error)
+    return response
+
+
 @app.delete("/meetings/{meeting_id}")
 def delete_meeting(
     meeting_id: UUID,
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(get_workspace_user),
 ):
+    authorize_workspace(current_user, admin=True)
     try:
         with Session(get_database_engine()) as session:
+            authorize_workspace(current_user, admin=True, session=session, lock=True)
             meeting = session.scalar(
-                select(Meeting).where(Meeting.id == meeting_id, Meeting.owner_id == current_user.id)
+                select(Meeting).where(Meeting.id == meeting_id, scope_predicate(Meeting, current_user.id, current_user.organization_id))
             )
             if meeting is None:
                 raise HTTPException(status_code=404, detail="Meeting not found.")
@@ -1050,8 +1343,10 @@ def delete_meeting(
 @app.post("/generate-minutes")
 def generate_minutes(
     request: MinutesRequest,
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(get_workspace_user),
 ):
+    authorize_workspace(current_user, admin=True)
+    limiter.check(current_user.id, "minutes", 10)
     print_gemini_stage("endpoint_started")
     transcript = request.transcript.strip()
     if not transcript:
@@ -1073,6 +1368,13 @@ action item only if a task was actually discussed or assigned. Use \"Unassigned\
 an action item without an identified owner and \"Not specified\" when no explicit
 deadline is stated. Return empty arrays when a category has no supported items.
 
+Labels such as "Speaker 1" and "Speaker 2" are anonymous speaker labels, not real
+participant names. Preserve speaker attribution when relevant, including using
+the speaker label as the owner of an explicitly stated first-person commitment.
+Never infer a speaker's identity from context or invent a real name. Actual names
+explicitly stated in the transcript may be used normally, but replace a speaker
+label with a name only when the transcript explicitly establishes that identity.
+
 Transcript:
 {transcript}
 """
@@ -1081,7 +1383,7 @@ Transcript:
         client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(
-                retry_options=MINUTES_GEMINI_RETRY_OPTIONS,
+                retry_options=MINUTES_GEMINI_RETRY_OPTIONS, timeout=60000,
             ),
         )
         print_gemini_stage("client_created")
@@ -1097,9 +1399,12 @@ Transcript:
         print_gemini_stage("response_received")
         if not response.text:
             raise ValueError("Gemini returned no content")
-        minutes = json.loads(response.text)
+        minutes = MeetingMinutesInput.model_validate_json(response.text).model_dump()
         print_gemini_stage("response_parsed")
+        authorize_workspace(current_user, admin=True)
         return minutes
+    except HTTPException:
+        raise
     except (json.JSONDecodeError, ValueError) as error:
         print_gemini_diagnostic(error, api_key)
         raise HTTPException(status_code=502, detail="Unable to generate meeting minutes.")
@@ -1123,11 +1428,16 @@ Transcript:
         raise HTTPException(status_code=502, detail="Unable to generate meeting minutes.")
 
 
-@app.post("/transcribe")
-async def transcribe_audio(
-    file: UploadFile = File(...),
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
+async def store_recording_upload(file: UploadFile):
+    # A crashed worker cannot run its finally block. Remove only our own old
+    # input files, never arbitrary system temporary files or active recordings.
+    cutoff = datetime.now(timezone.utc).timestamp() - 24 * 60 * 60
+    for stale in Path(tempfile.gettempdir()).glob("moa-recording-*"):
+        try:
+            if stale.is_file() and stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            pass
     temp_file_path = None
     try:
         # Validate file extension
@@ -1141,7 +1451,7 @@ async def transcribe_audio(
             )
 
         # Create temporary file with validated extension
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, prefix="moa-recording-", suffix=file_ext) as temp_file:
             temp_file_path = temp_file.name
 
             # Read and write file in chunks, enforcing size limit
@@ -1167,29 +1477,263 @@ async def transcribe_audio(
                     detail="Uploaded file is empty."
                 )
 
-        # Transcribe the audio using faster-whisper
-        segments, info = model.transcribe(temp_file_path)
-
-        # Combine all segments into a single transcript
-        transcript = " ".join([segment.text for segment in segments])
-
-        return {
-            "filename": file.filename,
-            "transcript": transcript,
-        }
-
-    finally:
-        # Delete the temporary file
+        return temp_file_path
+    except BaseException:
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
+        raise
+    finally:
+        await file.close()
+
+
+def process_recording(path, speaker_mode="multi", language=DEFAULT_LANGUAGE):
+    with recording_workers:
+        return transcribe_recording(path, model, os.getenv("DEEPGRAM_API_KEY"), deepgram_speaker_segments,
+                                    speaker_mode=speaker_mode, language=language)
+
+
+@app.get("/transcription-languages")
+def get_transcription_languages(current_user: AuthenticatedUser = Depends(get_workspace_user)):
+    authorize_workspace(current_user)
+    return {"default": DEFAULT_LANGUAGE, "languages": language_options()}
+
+
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...), current_user: AuthenticatedUser = Depends(get_workspace_user),
+                           speaker_mode: Annotated[Literal["single", "multi"], Form()] = "multi",
+                           language: Annotated[str, Form()] = DEFAULT_LANGUAGE):
+    authorize_workspace(current_user, admin=True)
+    limiter.check(current_user.id, "recording", 6)
+    try:
+        recorded_language(language)
+    except UnsupportedRecordedLanguage as error:
+        await file.close()
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError:
+        await file.close()
+        raise HTTPException(status_code=422, detail="Unsupported language selection.")
+    path = await store_recording_upload(file)
+    try:
+        process_arguments = (path, speaker_mode) if language == DEFAULT_LANGUAGE else (path, speaker_mode, language)
+        result = await run_in_threadpool(process_recording, *process_arguments)
+        authorize_workspace(current_user, admin=True)
+        return {"filename": file.filename, **result}
+    except RecordedTranscriptionError:
+        raise HTTPException(status_code=502, detail="Unable to transcribe this recording. Please check the file and try again.")
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def run_recording_job(job_id, path, speaker_mode="multi", language=DEFAULT_LANGUAGE):
+    try:
+        with Session(get_database_engine()) as session:
+            job = session.get(TranscriptionJob, job_id)
+            if job is None or job.status != "Queued":
+                return
+            authorize_workspace(AuthenticatedUser(job.owner_id, job.organization_id), admin=True, session=session, lock=True)
+            job.status = "Processing"
+            session.commit()
+        result = (process_recording(path, speaker_mode) if language == DEFAULT_LANGUAGE
+                  else process_recording(path, speaker_mode, language))
+        result = {**result, "speaker_mode": speaker_mode}
+        with Session(get_database_engine()) as session:
+            job = session.get(TranscriptionJob, job_id)
+            if job and job.status == "Processing":
+                authorize_workspace(AuthenticatedUser(job.owner_id, job.organization_id), admin=True, session=session, lock=True)
+                job.result = result
+                job.status = "Completed"
+                session.commit()
+    except Exception as error:
+        print(f"RECORDING_JOB: failed error_type={type(error).__name__}", file=sys.stderr)
+        try:
+            with Session(get_database_engine()) as session:
+                job = session.get(TranscriptionJob, job_id)
+                if job:
+                    job.status = "Failed"
+                    job.error = "Unable to process this recording. Please upload it again to retry."
+                    session.commit()
+        except SQLAlchemyError:
+            pass  # Stale-job detection provides a safe failure after a database outage.
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def job_response(job):
+    return {"id": str(job.id), "status": job.status, "result": job.result if job.status == "Completed" else None, "error": job.error}
+
+
+@app.post("/transcription-jobs", status_code=202)
+async def create_transcription_job(background_tasks: BackgroundTasks, file: UploadFile = File(...),
+                                   current_user: AuthenticatedUser = Depends(get_workspace_user),
+                                   speaker_mode: Annotated[Literal["single", "multi"], Form()] = "multi",
+                                   language: Annotated[str, Form()] = DEFAULT_LANGUAGE):
+    authorize_workspace(current_user, admin=True)
+    limiter.check(current_user.id, "recording-job", 6)
+    try:
+        recorded_language(language)
+    except UnsupportedRecordedLanguage as error:
+        await file.close()
+        raise HTTPException(status_code=422, detail=str(error))
+    except ValueError:
+        await file.close()
+        raise HTTPException(status_code=422, detail="Unsupported language selection.")
+    path = await store_recording_upload(file)
+    try:
+        now = datetime.now(timezone.utc)
+        with Session(get_database_engine()) as session:
+            authorize_workspace(current_user, admin=True, session=session, lock=True)
+            session.execute(delete(TranscriptionJob).where(TranscriptionJob.expires_at < now))
+            pending = session.scalar(select(func.count()).select_from(TranscriptionJob).where(
+                TranscriptionJob.owner_id == current_user.id,
+                TranscriptionJob.status.in_(["Queued", "Processing"]),
+                TranscriptionJob.created_at > now - timedelta(minutes=30),
+            ))
+            if pending >= 2:
+                raise HTTPException(status_code=429, detail="You already have two recordings processing. Please wait.")
+            queued_count = session.scalar(select(func.count()).select_from(TranscriptionJob).where(
+                TranscriptionJob.status.in_(["Queued", "Processing"]),
+                TranscriptionJob.created_at > now - timedelta(minutes=30),
+            ))
+            if queued_count >= 16:
+                raise HTTPException(status_code=429, detail="Recording processing is busy. Please try again shortly.")
+            job = TranscriptionJob(owner_id=current_user.id, organization_id=current_user.organization_id, status="Queued", created_at=now,
+                                   expires_at=now + timedelta(hours=24))
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            response = job_response(job)
+        background_tasks.add_task(run_recording_job, job.id, path, speaker_mode, language)
+        return response
+    except BaseException as error:
+        if os.path.exists(path):
+            os.remove(path)
+        if isinstance(error, SQLAlchemyError):
+            raise HTTPException(status_code=503, detail="Recording processing is unavailable. Please retry.") from error
+        raise
+
+
+@app.get("/transcription-jobs/{job_id}")
+def get_transcription_job(job_id: UUID, current_user: AuthenticatedUser = Depends(get_workspace_user)):
+    authorize_workspace(current_user, admin=True)
+    now = datetime.now(timezone.utc)
+    try:
+        with Session(get_database_engine()) as session:
+            authorize_workspace(current_user, admin=True, session=session)
+            job = session.scalar(select(TranscriptionJob).where(
+                TranscriptionJob.id == job_id, TranscriptionJob.owner_id == current_user.id,
+                TranscriptionJob.organization_id == current_user.organization_id,
+                TranscriptionJob.expires_at > now,
+            ))
+            if job is None:
+                raise HTTPException(status_code=404, detail="Recording job not found or expired. Upload again to retry.")
+            created = job.created_at.replace(tzinfo=timezone.utc) if job.created_at.tzinfo is None else job.created_at
+            if job.status in ("Queued", "Processing") and created < now - timedelta(minutes=30):
+                job.status = "Failed"
+                job.error = "Processing was interrupted or took too long. Upload the recording again to retry."
+                session.commit()
+            return job_response(job)
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="Unable to check recording progress. Please retry.")
+
+
+def deepgram_speaker_segments(words: object, speaker_labels: dict[int, str]) -> list[dict[str, str]]:
+    """Group complete word metadata into turns, updating a connection-local map.
+
+    Reject incomplete metadata as a whole so we never silently drop unlabelled
+    words or assign them to a neighbouring speaker. Validate before changing the
+    mapping; malformed results must not reserve speaker numbers.
+    """
+    if not isinstance(words, list) or not words:
+        return []
+
+    validated_words: list[tuple[int, str]] = []
+    for word in words:
+        if not isinstance(word, dict):
+            return []
+        speaker = word.get("speaker")
+        if type(speaker) is not int or speaker < 0:
+            return []
+        token = word.get("punctuated_word", word.get("word"))
+        if not isinstance(token, str) or not token.strip():
+            return []
+        validated_words.append((speaker, token.strip()))
+
+    segments: list[dict[str, str]] = []
+    for speaker, token in validated_words:
+        if speaker not in speaker_labels:
+            speaker_labels[speaker] = f"Speaker {len(speaker_labels) + 1}"
+        label = speaker_labels[speaker]
+        if segments and segments[-1]["speaker"] == label:
+            segments[-1]["text"] += f" {token}"
+        else:
+            segments.append({"speaker": label, "text": token})
+    return segments
+
+
+def log_deepgram_final_diarization(result: dict, segments: list[dict[str, str]], smoothed_words=None) -> None:
+    """Opt-in development counters only; never log words or provider payloads.
+
+    Enable locally with MOA_DIARIZATION_DEBUG=1 before starting the backend.
+    The parser output counts distinguish provider IDs from MOA's grouping.
+    """
+    if os.getenv("MOA_DIARIZATION_DEBUG") != "1" or result.get("is_final") is not True:
+        return
+    channel = result.get("channel")
+    alternatives = channel.get("alternatives") if isinstance(channel, dict) else None
+    alternative = alternatives[0] if isinstance(alternatives, list) and alternatives else None
+    raw_words = alternative.get("words") if isinstance(alternative, dict) else None
+    words = raw_words if isinstance(raw_words, list) else []
+    speakers = sorted({
+        word["speaker"] for word in words
+        if isinstance(word, dict) and type(word.get("speaker")) is int and word["speaker"] >= 0
+    })
+    labelled_words = sum(
+        isinstance(word, dict) and type(word.get("speaker")) is int and word["speaker"] >= 0
+        for word in words
+    )
+    has_speaker_metadata = any(isinstance(word, dict) and "speaker" in word for word in words)
+    metadata = result.get("metadata")
+    has_info = isinstance(metadata, dict) and "diarize_info" in metadata
+    info = metadata.get("diarize_info") if isinstance(metadata, dict) else None
+    info = info if isinstance(info, dict) else {}
+
+    def version_token(value):
+        # Allow only short numeric version tokens, not arbitrary provider strings.
+        return value if isinstance(value, str) and len(value) <= 32 and re.fullmatch(r"v?\d+(?:[._-]\d+)*", value) else "unavailable"
+
+    try:
+        print(
+            f"Deepgram final diarization: words={len(words)} "
+            f"speakers={json.dumps(speakers, separators=(',', ':'))} "
+            f"speaker_metadata={'present' if has_speaker_metadata else 'missing'} "
+            f"labelled_words={labelled_words} parsed_turns={len(segments)} "
+            f"parsed_speakers={len({segment['speaker'] for segment in segments})} "
+            f"diarize_info={'present' if has_info else 'missing'} "
+            f"arch={version_token(info.get('arch'))} version={version_token(info.get('version'))} "
+            f"{smoothing_diagnostics(words, words if smoothed_words is None else smoothed_words)}",
+            file=sys.stderr, flush=True,
+        )
+    except OSError:
+        pass  # Diagnostic output must not interrupt transcription.
 
 
 @app.websocket("/ws/transcribe")
 async def stream_transcription(websocket: WebSocket):
     """Relay one browser audio stream to Deepgram and return transcript events."""
     try:
-        get_websocket_user(websocket)
-    except HTTPException:
+        authenticated = get_websocket_user(websocket)
+        raw_organization = getattr(websocket, "query_params", {}).get("organization_id")
+        organization_id = UUID(raw_organization) if raw_organization is not None else None
+        stream_user = AuthenticatedUser(authenticated.id, organization_id)
+        await run_in_threadpool(authorize_workspace, stream_user, admin=True)
+    except (HTTPException, ValueError):
+        await websocket.close(code=1008)
+        return
+
+    speaker_mode = getattr(websocket, "query_params", {}).get("speaker_mode", "multi")
+    if speaker_mode not in ("single", "multi"):
         await websocket.close(code=1008)
         return
 
@@ -1212,15 +1756,19 @@ async def stream_transcription(websocket: WebSocket):
             "language": "en-US",
             "smart_format": "true",
             "interim_results": "true",
+            **({"diarize_model": "latest"} if speaker_mode == "multi" else {}),
         }
     )
     deepgram_url = f"{DEEPGRAM_STREAMING_URL}?{query}"
+    speaker_labels: dict[int, str] = {}
+    seen_finals = set()
+    browser_task = deepgram_task = None
 
     try:
         async with connect_to_deepgram(
             deepgram_url,
             additional_headers={"Authorization": f"Token {api_key}"},
-            max_size=None,
+            max_size=2 * 1024 * 1024,
         ) as deepgram:
 
             async def forward_browser_audio():
@@ -1229,6 +1777,8 @@ async def stream_transcription(websocket: WebSocket):
                     if message["type"] == "websocket.disconnect":
                         return "disconnect"
 
+                    if organization_id is not None:
+                        await run_in_threadpool(authorize_workspace, stream_user, admin=True)
                     audio = message.get("bytes")
                     if audio:
                         await deepgram.send(audio)
@@ -1238,7 +1788,7 @@ async def stream_transcription(websocket: WebSocket):
                         except (TypeError, json.JSONDecodeError):
                             control_message = {}
 
-                        if control_message.get("type") == "finalize":
+                        if isinstance(control_message, dict) and control_message.get("type") == "finalize":
                             await deepgram.send(json.dumps({"type": "CloseStream"}))
                             return "finalize"
 
@@ -1251,12 +1801,11 @@ async def stream_transcription(websocket: WebSocket):
 
             async def forward_deepgram_transcripts():
                 async for raw_message in deepgram:
-                    if isinstance(raw_message, bytes):
-                        raw_message = raw_message.decode("utf-8")
-
                     try:
                         result = json.loads(raw_message)
-                    except (TypeError, json.JSONDecodeError):
+                    except (TypeError, ValueError, UnicodeError):
+                        continue
+                    if not isinstance(result, dict):
                         continue
 
                     result_type = result.get("type")
@@ -1269,16 +1818,35 @@ async def stream_transcription(websocket: WebSocket):
                     if result_type != "Results":
                         continue
 
-                    alternatives = result.get("channel", {}).get("alternatives", [])
-                    text = alternatives[0].get("transcript", "").strip() if alternatives else ""
+                    channel = result.get("channel")
+                    alternatives = channel.get("alternatives") if isinstance(channel, dict) else None
+                    if not isinstance(alternatives, list) or not alternatives or not isinstance(alternatives[0], dict):
+                        continue
+                    raw_text = alternatives[0].get("transcript")
+                    text = raw_text.strip() if isinstance(raw_text, str) else ""
                     if text:
-                        await websocket.send_json(
-                            {
-                                "type": "transcript",
-                                "text": text,
-                                "is_final": bool(result.get("is_final", False)),
-                            }
-                        )
+                        transcript_message = {
+                            "type": "transcript",
+                            "text": text,
+                            "is_final": result.get("is_final") is True,
+                        }
+                        if transcript_message["is_final"]:
+                            timing = (result.get("start"), result.get("duration"))
+                            if all(type(value) in (int, float) and math.isfinite(value) for value in timing):
+                                fingerprint = (*timing, text)
+                                if fingerprint in seen_finals:
+                                    continue
+                                seen_finals.add(fingerprint)
+                            if speaker_mode == "multi":
+                                raw_words = alternatives[0].get("words")
+                                smoothed_words = smooth_speaker_words(raw_words)
+                                segments = deepgram_speaker_segments(smoothed_words, speaker_labels)
+                                log_deepgram_final_diarization(result, segments, smoothed_words)
+                                if segments:
+                                    transcript_message["speaker_segments"] = segments
+                        if organization_id is not None:
+                            await run_in_threadpool(authorize_workspace, stream_user, admin=True)
+                        await websocket.send_json(transcript_message)
 
             browser_task = asyncio.create_task(forward_browser_audio())
             deepgram_task = asyncio.create_task(forward_deepgram_transcripts())
@@ -1290,7 +1858,10 @@ async def stream_transcription(websocket: WebSocket):
                 browser_result = browser_task.result()
                 if browser_result == "finalize":
                     # Keep relaying until Deepgram closes after its CloseStream flush.
-                    await deepgram_task
+                    try:
+                        await asyncio.wait_for(deepgram_task, timeout=30)
+                    except asyncio.TimeoutError:
+                        await websocket.send_json({"type": "error", "message": "Finalization timed out. Finalized transcript has been preserved; the last words may be incomplete."})
                 else:
                     deepgram_task.cancel()
                     await asyncio.gather(deepgram_task, return_exceptions=True)
@@ -1304,6 +1875,12 @@ async def stream_transcription(websocket: WebSocket):
             except RuntimeError:
                 pass
 
+    except HTTPException:
+        try:
+            await websocket.send_json({"type": "error", "message": "Company access changed. Return to Personal or ask an admin for access."})
+            await websocket.close(code=1008)
+        except RuntimeError:
+            pass
     except WebSocketDisconnect:
         pass
     except (ConnectionClosed, WebSocketException, OSError):
@@ -1314,9 +1891,21 @@ async def stream_transcription(websocket: WebSocket):
             await websocket.close(code=1011)
         except RuntimeError:
             pass
+    finally:
+        tasks = [task for task in (browser_task, deepgram_task) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+app.include_router(organization_router(lambda: get_database_engine(), get_current_user))
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # This module has already created the app and registered every ORM mapping.
+    # Importing "main:app" here would execute the module a second time under the
+    # name ``main`` and register the same tables on workspaces.Base.metadata.
+    uvicorn.run(app, host="0.0.0.0", port=8000)

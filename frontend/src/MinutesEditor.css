@@ -1,0 +1,10 @@
+.minutes-editor fieldset { border: 0; padding: 0; min-width: 0; }
+.minutes-editor label { display: grid; gap: 6px; margin: 12px 0; color: var(--text-secondary); font-size: 13px; }
+.minutes-editor textarea { min-height: 85px; resize: vertical; }
+.minutes-editor select { padding: 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-muted); color: var(--text-primary); }
+.minutes-editor .action-edit { padding: 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.minutes-editor .draft-notice { color: var(--accent); font-size: 12px; }
+.minutes-editor p, .minutes-editor li { white-space: pre-wrap; overflow-wrap: anywhere; }
+.summary-dates { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.summary-dates label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 13px; }
+.summary-result { white-space: pre-wrap; overflow-wrap: anywhere; }

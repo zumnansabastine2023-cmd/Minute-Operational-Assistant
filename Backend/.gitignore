@@ -20,3 +20,13 @@ venv/
 *.webm
 *.mp3
 *.m4a
+
+# Private multilingual benchmark inputs and generated results
+speech_benchmarks/pilot_dataset/audio/*
+speech_benchmarks/pilot_dataset/references/*
+speech_benchmarks/pilot_dataset/hypotheses/*
+speech_benchmarks/pilot_dataset/reports/*
+!speech_benchmarks/pilot_dataset/audio/.gitkeep
+!speech_benchmarks/pilot_dataset/references/.gitkeep
+!speech_benchmarks/pilot_dataset/hypotheses/.gitkeep
+!speech_benchmarks/pilot_dataset/reports/.gitkeep

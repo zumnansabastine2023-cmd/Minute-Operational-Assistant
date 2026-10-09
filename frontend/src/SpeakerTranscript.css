@@ -1,0 +1,96 @@
+.speaker-name-manager {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+
+.speaker-fallback-hint {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.speaker-name-manager summary {
+  width: fit-content;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.speaker-name-manager .speaker-name-hint {
+  margin: 10px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.speaker-name-manager ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.speaker-name-manager li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.speaker-name-manager li > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.speaker-name-manager strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.speaker-name-manager small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.speaker-name-manager li > div {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.speaker-name-manager button {
+  margin: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.speaker-name-manager .speaker-name-error {
+  margin: 10px 0 0;
+  color: #b42318;
+  font-size: 12px;
+}
+
+.dark .speaker-name-manager .speaker-name-error {
+  color: #ffb4ab;
+}
+
+@media (max-width: 420px) {
+  .speaker-name-manager li {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
